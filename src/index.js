@@ -1,4 +1,7 @@
 import { ObjectDetector, DrawingUtils, FilesetResolver } from '@mediapipe/tasks-vision';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const ai = new GoogleGenerativeAI("AIzaSyBcfMUGoBbo6xX1mF0o89DMsVzqQrlXmmg");
 
 // Object Detection Constants
 const DETECTION_SCORE_THRESHOLD = 0.5;  // Confidence threshold for detections (0-1)
@@ -42,7 +45,7 @@ const GETTING_CLOSE_RATIO = 0.03;      // Area ratio threshold for "getting clos
                                        // Range: 0.02-0.1
 
 // Speech Synthesis Constants
-const ANNOUNCEMENT_DELAY = 2000;        // Minimum milliseconds between announcements
+const ANNOUNCEMENT_DELAY = 5000;        // Minimum milliseconds between announcements
                                        // Higher: Less frequent announcements
                                        // Lower: More frequent announcements
                                        // Range: 1000-5000
@@ -87,6 +90,25 @@ const APPROACH_SPEED_THRESHOLD = 50;   // Pixels per second to consider object a
                                       // Higher: Only fast approaching objects trigger
                                       // Lower: More sensitive to approaching objects
                                       // Range: 30-100
+
+// Gemini Scene Analysis Constants
+const SCENE_ANALYSIS_INTERVAL = 20000;    // Milliseconds between scene analyses
+                                        // Higher: Less frequent but saves resources
+                                        // Lower: More frequent but more API calls
+                                        // Range: 3000-10000
+
+const SCENE_CLIP_DURATION = 3000;        // Milliseconds of footage to analyze
+                                        // Higher: More context but slower processing
+                                        // Lower: Faster but less context
+                                        // Range: 2000-5000
+
+const MAX_FRAMES_PER_CLIP = 10;          // Maximum frames to send to Gemini
+                                        // Higher: Better analysis but more data
+                                        // Lower: Less accurate but faster
+                                        // Range: 5-15
+
+const GEMINI_PRIORITY = 'gemini';  // Highest priority level for Gemini narrations
+                                  // Priority hierarchy: gemini > urgent > normal
 
 class VisionAssistApp {
     constructor() {
@@ -134,6 +156,19 @@ class VisionAssistApp {
 
         this.speechCounter = 0;
         this.lastWarnings = new Map(); // Track last warnings for each object
+
+        // Add new properties for scene analysis
+        this.frameBuffer = [];
+        this.lastSceneAnalysis = 0;
+        this.sceneAnalysisInterval = null;
+
+        // Initialize scene analysis
+        this.initializeSceneAnalysis();
+
+        // Add speech queue management
+        this.speechQueue = [];
+        this.isGeminiSpeaking = false;
+        this.currentUtterance = null;
     }
 
     async handleVideoUpload() {
@@ -512,29 +547,107 @@ class VisionAssistApp {
         this.utterance.volume = 1;
     }
 
-    // Add method to speak messages
+    // Modify the speak method to handle priorities
     speak(message, priority = 'normal') {
         const now = Date.now();
+        
+        // Create speech item
+        const speechItem = {
+            message,
+            priority,
+            timestamp: now
+        };
+
+        // Handle Gemini priority
+        if (priority === GEMINI_PRIORITY) {
+            // Clear non-Gemini items from queue
+            this.speechQueue = this.speechQueue.filter(item => item.priority === GEMINI_PRIORITY);
+            
+            // Add Gemini message to queue
+            this.speechQueue.push(speechItem);
+            
+            // If something is currently speaking and it's not Gemini
+            if (this.speechSynthesis.speaking && !this.isGeminiSpeaking) {
+                // Cancel current speech
+                this.speechSynthesis.cancel();
+                // Current speech's onend event will trigger next speech
+            } else if (!this.speechSynthesis.speaking) {
+                // If nothing is speaking, start speaking
+                this.speakNextInQueue();
+            }
+            return;
+        }
+
+        // Handle normal and urgent priorities
         if (now - this.lastAnnouncement < ANNOUNCEMENT_DELAY && priority !== 'urgent') {
             return; // Skip non-urgent messages if too soon
         }
 
-        // Cancel any ongoing speech
-        this.speechSynthesis.cancel();
-
-        this.utterance.text = message;
-        
-        // Adjust speech parameters based on priority
-        if (priority === 'urgent') {
-            this.utterance.rate = URGENT_SPEECH_RATE;
-            this.utterance.pitch = 1.2;
-        } else {
-            this.utterance.rate = SPEECH_RATE;
-            this.utterance.pitch = 1;
+        // Don't interrupt Gemini speech
+        if (this.isGeminiSpeaking) {
+            return;
         }
 
-        this.speechSynthesis.speak(this.utterance);
-        this.lastAnnouncement = now;
+        // Add to queue
+        this.speechQueue.push(speechItem);
+
+        // If nothing is speaking, start speaking
+        if (!this.speechSynthesis.speaking) {
+            this.speakNextInQueue();
+        }
+    }
+
+    // Add new method to handle speech queue
+    speakNextInQueue() {
+        if (this.speechQueue.length === 0) {
+            this.isGeminiSpeaking = false;
+            this.currentUtterance = null;
+            return;
+        }
+
+        // Get next speech item
+        const speechItem = this.speechQueue.shift();
+        
+        // Create new utterance
+        const utterance = new SpeechSynthesisUtterance(speechItem.message);
+        
+        // Set speech parameters based on priority
+        if (speechItem.priority === GEMINI_PRIORITY) {
+            utterance.rate = SPEECH_RATE;
+            utterance.pitch = 1;
+            this.isGeminiSpeaking = true;
+        } else if (speechItem.priority === 'urgent') {
+            utterance.rate = URGENT_SPEECH_RATE;
+            utterance.pitch = 1.2;
+        } else {
+            utterance.rate = SPEECH_RATE;
+            utterance.pitch = 1;
+        }
+
+        // Handle speech end
+        utterance.onend = () => {
+            this.lastAnnouncement = Date.now();
+            this.currentUtterance = null;
+            if (speechItem.priority === GEMINI_PRIORITY) {
+                this.isGeminiSpeaking = false;
+            }
+            this.speakNextInQueue(); // Speak next item in queue
+        };
+
+        // Handle speech error
+        utterance.onerror = (event) => {
+            console.error('Speech error:', event);
+            this.currentUtterance = null;
+            if (speechItem.priority === GEMINI_PRIORITY) {
+                this.isGeminiSpeaking = false;
+            }
+            this.speakNextInQueue(); // Try next item in queue
+        };
+
+        // Speak the utterance
+        this.currentUtterance = utterance;
+        this.speechSynthesis.speak(utterance);
+        this.lastAnnouncement = speechItem.timestamp;
     }
 
     // Add new helper methods for speed and direction calculations
@@ -700,6 +813,142 @@ class VisionAssistApp {
         const objectArea = box.width * box.height;
         const frameArea = this.video.videoWidth * this.video.videoHeight;
         return objectArea / frameArea;
+    }
+
+    // Add new method for scene analysis initialization
+    initializeSceneAnalysis() {
+        // Start scene analysis when detection starts
+        this.video.addEventListener('play', () => {
+            this.startSceneAnalysis();
+        });
+
+        // Stop scene analysis when video stops
+        this.video.addEventListener('pause', () => {
+            this.stopSceneAnalysis();
+        });
+    }
+
+    startSceneAnalysis() {
+        this.sceneAnalysisInterval = setInterval(() => {
+            this.analyzeScene();
+        }, SCENE_ANALYSIS_INTERVAL);
+    }
+
+    stopSceneAnalysis() {
+        if (this.sceneAnalysisInterval) {
+            clearInterval(this.sceneAnalysisInterval);
+            this.sceneAnalysisInterval = null;
+        }
+        this.frameBuffer = [];
+    }
+
+    async captureFrame() {
+        // Create a temporary canvas for frame capture
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = this.video.videoWidth;
+        tempCanvas.height = this.video.videoHeight;
+        const ctx = tempCanvas.getContext('2d');
+        ctx.drawImage(this.video, 0, 0);
+        
+        // Convert to base64 and return
+        return tempCanvas.toDataURL('image/jpeg', 0.7);
+    }
+
+    async analyzeScene() {
+        try {
+            const now = Date.now();
+            if (now - this.lastSceneAnalysis < SCENE_ANALYSIS_INTERVAL) {
+                return;
+            }
+
+            // Capture frames for the clip duration
+            const MAX_FRAMES_TO_SEND = 3; // Reduce number of frames to analyze
+            const skipFrames = Math.floor(MAX_FRAMES_PER_CLIP / MAX_FRAMES_TO_SEND);
+
+            const frames = [];
+            const captureInterval = SCENE_CLIP_DURATION / MAX_FRAMES_PER_CLIP;
+            
+            for (let i = 0; i < MAX_FRAMES_PER_CLIP; i += skipFrames) {
+                const frame = await this.captureFrame();
+                frames.push(frame);
+                await new Promise(resolve => setTimeout(resolve, captureInterval * skipFrames));
+            }
+
+            // Prepare the prompt for Gemini
+            const prompt = `You are a vision assistant guiding someone to navigate safely. Speak directly to them. 
+            Describe hazards, movement patterns, and overall safety clearly and concisely. 
+            
+            Format: 
+            1. Start with a brief summary of the situation. 
+            2. Provide clear, direct guidance on what to do.
+            
+            IMPORTANT: Use short, direct sentences. No extra commentary. Just give practical, spoken-style advice. 
+            
+            Example: 
+            "Watch out for pedestrians ahead. Step slightly to your right to avoid collisions. The path looks clear, but stay alert for sudden obstacles."
+            `;
+            ;
+
+            // Call Gemini API (implementation depends on your setup)
+            const analysis = await this.callGeminiAPI(frames, prompt);
+            
+            // Convert analysis to speech
+            if (analysis && analysis.trim()) {
+                this.speak(analysis, this.determineWarningPriority(analysis));
+            }
+
+            this.lastSceneAnalysis = now;
+        } catch (error) {
+            console.error('Scene analysis error:', error);
+        }
+    }
+
+    async callGeminiAPI(frames, prompt) {
+        try {
+            console.log("Calling Gemini API...");
+            const model = ai.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+            
+            const imagesParts = frames.map(frame => {
+                const base64Data = frame.split(',')[1];
+                return {
+                    inlineData: {
+                        data: base64Data,
+                        mimeType: "image/jpeg"
+                    }
+                };
+            });
+
+            const parts = [
+                { text: prompt },
+                ...imagesParts
+            ];
+
+            const result = await model.generateContent(parts);
+            const response = await result.response;
+            const text = response.text();
+            
+            // Use GEMINI_PRIORITY when speaking Gemini's response
+            if (text && text.trim()) {
+                this.speak(text, GEMINI_PRIORITY);
+            }
+            
+            console.log(text)
+
+            return text;
+        } catch (error) {
+            console.error("Gemini API error:", error);
+            if (error.message) {
+                console.error("Error details:", error.message);
+            }
+            return null;
+        }
+    }
+
+    determineWarningPriority(analysis) {
+        // Simple priority determination based on keywords
+        const urgentKeywords = ['immediate', 'danger', 'hazard', 'warning', 'stop'];
+        return urgentKeywords.some(keyword => 
+            analysis.toLowerCase().includes(keyword)) ? 'urgent' : 'normal';
     }
 }
 
