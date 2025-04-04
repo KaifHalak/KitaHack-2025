@@ -1,70 +1,114 @@
 import 'package:flutter/material.dart';
+import 'dart:math';
 import '../models/tracked_object.dart';
 import '../utils/constants.dart';
 
 class DetectionHighlight extends CustomPainter {
   final List<TrackedObject> trackedObjects;
-
-  DetectionHighlight({required this.trackedObjects});
-
+  final bool highContrast;
+  
+  const DetectionHighlight({
+    required this.trackedObjects,
+    this.highContrast = false,
+  });
+  
   @override
   void paint(Canvas canvas, Size size) {
-    for (final object in trackedObjects) {
-      final box = object.lastBox;
-      final areaRatio = (box.width * box.height) / (size.width * size.height);
-      
-      // Determine color based on proximity
+    for (var object in trackedObjects) {
+      // Determine box color based on object type and confidence
       Color boxColor;
-      if (areaRatio > VERY_CLOSE_RATIO) {
-        boxColor = Colors.red.withOpacity(0.3);
-      } else if (areaRatio > GETTING_CLOSE_RATIO) {
-        boxColor = Colors.orange.withOpacity(0.3);
-      } else {
-        boxColor = Colors.green.withOpacity(0.3);
-      }
-
-      // Draw filled rectangle with transparency
-      final fillPaint = Paint()
-        ..color = boxColor
-        ..style = PaintingStyle.fill;
+      double strokeWidth;
       
-      canvas.drawRect(
-        Rect.fromLTWH(box.left, box.top, box.width, box.height),
-        fillPaint,
-      );
-
-      // Draw border with solid color
-      final borderPaint = Paint()
-        ..color = boxColor.withOpacity(1.0)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0;
-
-      canvas.drawRect(
-        Rect.fromLTWH(box.left, box.top, box.width, box.height),
-        borderPaint,
-      );
-
-      // Draw movement trail if object is moving
-      if (object.positions.length > 1 && object.speed > MIN_SPEED_THRESHOLD) {
-        final trailPaint = Paint()
-          ..color = boxColor.withOpacity(0.5)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.0;
-
-        final path = Path();
-        path.moveTo(object.positions[0].x, object.positions[0].y);
-        
-        for (var i = 1; i < object.positions.length; i++) {
-          path.lineTo(object.positions[i].x, object.positions[i].y);
+      if (highContrast) {
+        // High contrast mode - use yellow boxes
+        boxColor = Colors.yellow;
+        strokeWidth = 5.0;
+      } else {
+        // Normal mode - use different colors based on object category
+        if (object.categoryName == 'person') {
+          boxColor = Colors.green;
+        } else if (['car', 'truck', 'bus', 'motorcycle'].contains(object.categoryName)) {
+          boxColor = Colors.red;
+        } else if (['dog', 'cat'].contains(object.categoryName)) {
+          boxColor = Colors.orange;
+        } else {
+          boxColor = Colors.blue;
         }
         
-        canvas.drawPath(path, trailPaint);
+        // Adjust opacity based on confidence
+        boxColor = boxColor.withOpacity(0.3 + object.confidence * 0.7);
+        strokeWidth = 3.0;
+      }
+      
+      // Draw bounding box
+      final rect = Rect.fromLTWH(
+        object.lastBox.left, 
+        object.lastBox.top,
+        object.lastBox.width,
+        object.lastBox.height,
+      );
+      
+      final boxPaint = Paint()
+        ..color = boxColor.withOpacity(0.3)
+        ..style = PaintingStyle.fill;
+      
+      final strokePaint = Paint()
+        ..color = boxColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth;
+      
+      // Draw box with fill and stroke
+      canvas.drawRect(rect, boxPaint);
+      canvas.drawRect(rect, strokePaint);
+      
+      // Draw motion indicators for high contrast mode
+      if (highContrast && object.speed > 5.0) {
+        // Draw motion arrow in direction of movement
+        final center = Offset(
+          object.lastBox.left + object.lastBox.width / 2,
+          object.lastBox.top + object.lastBox.height / 2,
+        );
+        
+        final radians = object.direction * 3.14159 / 180;
+        final arrowLength = 30.0;
+        
+        final endPoint = Offset(
+          center.dx + arrowLength * cos(radians),
+          center.dy + arrowLength * sin(radians),
+        );
+        
+        final arrowPaint = Paint()
+          ..color = Colors.yellow
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 4.0;
+        
+        // Draw arrow line
+        canvas.drawLine(center, endPoint, arrowPaint);
+        
+        // Draw arrow head
+        final arrowHeadSize = 10.0;
+        final arrowHeadAngle1 = radians + 2.5;
+        final arrowHeadAngle2 = radians - 2.5;
+        
+        final arrowHead1 = Offset(
+          endPoint.dx - arrowHeadSize * cos(arrowHeadAngle1),
+          endPoint.dy - arrowHeadSize * sin(arrowHeadAngle1),
+        );
+        
+        final arrowHead2 = Offset(
+          endPoint.dx - arrowHeadSize * cos(arrowHeadAngle2),
+          endPoint.dy - arrowHeadSize * sin(arrowHeadAngle2),
+        );
+        
+        canvas.drawLine(endPoint, arrowHead1, arrowPaint);
+        canvas.drawLine(endPoint, arrowHead2, arrowPaint);
       }
     }
   }
-
+  
   @override
   bool shouldRepaint(DetectionHighlight oldDelegate) {
-    return true; // Always repaint to show updated positions
+    return oldDelegate.trackedObjects != trackedObjects || 
+           oldDelegate.highContrast != highContrast;
   }
 } 

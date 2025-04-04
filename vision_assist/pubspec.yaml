@@ -39,10 +39,10 @@ dependencies:
   js: ^0.6.7
 
   # Camera and Image Processing - Commented out for web demo
-  # camera: ^0.10.5+5
-  # image: ^4.1.7
-  # path_provider: ^2.1.2
-  # permission_handler: ^11.0.1
+  camera: ^0.10.5+5
+  image_picker: ^1.0.4
+  path_provider: ^2.1.2
+  permission_handler: ^11.0.1
 
   # ML and AI - Commented out for web demo
   # google_mlkit_object_detection: ^0.10.0
@@ -53,17 +53,16 @@ dependencies:
   # flutter_tts: ^3.8.5
 
   # State Management
-  provider: ^6.1.1
+  provider: ^6.0.5
 
   # UI Components
   flutter_svg: ^2.0.9
   cached_network_image: ^3.3.1
 
   # Additional Features - Only keeping video_player for the demo
-  # image_picker: ^1.0.7
-  video_player: ^2.8.1
-  # shared_preferences: ^2.2.2
-  # http: ^1.1.0
+  video_player: ^2.7.0
+  shared_preferences: ^2.2.2
+  http: ^1.1.0
 
 dev_dependencies:
   flutter_test:
