@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
 import 'screens/camera_screen.dart';
 import 'theme/app_theme.dart';
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await availableCameras(); // Ensure camera initialization
+void main() {
   runApp(const MyApp());
 }
 

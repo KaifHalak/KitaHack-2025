@@ -9,8 +9,8 @@ const int MAX_PREDICTION_FRAMES = 3;
 const int MEASUREMENT_INTERVAL = 10;
 
 // Proximity Warning Constants
-const double VERY_CLOSE_RATIO = 0.08;
-const double GETTING_CLOSE_RATIO = 0.03;
+const double VERY_CLOSE_RATIO = 0.15;
+const double GETTING_CLOSE_RATIO = 0.08;
 
 // Speech Synthesis Constants
 const int announcementDelay = 5000;          // Minimum milliseconds between announcements
@@ -18,10 +18,10 @@ const double speechRate = 1.2;               // Speech rate for normal announcem
 const double urgentSpeechRate = 1.3;         // Speech rate for urgent announcements
 
 // Track Management Constants
-const int MAX_POSITION_HISTORY = 10;
+const int MAX_POSITION_HISTORY = 30;
 const int TRACK_CLEANUP_DELAY = 1500;
-const int MAX_STALE_TIME = 1500;
-const int MAX_MISSING_FRAMES = 5;
+const int MAX_STALE_TIME = 5000; // Milliseconds
+const int MAX_MISSING_FRAMES = 30;
 
 // Movement Constants
 const double MIN_SPEED_THRESHOLD = 5.0;

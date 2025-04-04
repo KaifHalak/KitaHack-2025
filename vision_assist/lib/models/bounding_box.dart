@@ -14,6 +14,20 @@ class BoundingBox {
   double get right => left + width;
   double get bottom => top + height;
 
+  BoundingBox copyWith({
+    double? left,
+    double? top,
+    double? width,
+    double? height,
+  }) {
+    return BoundingBox(
+      left: left ?? this.left,
+      top: top ?? this.top,
+      width: width ?? this.width,
+      height: height ?? this.height,
+    );
+  }
+
   factory BoundingBox.fromMap(Map<String, dynamic> map) {
     return BoundingBox(
       left: map['left']?.toDouble() ?? 0.0,

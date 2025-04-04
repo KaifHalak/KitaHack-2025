@@ -1,24 +1,15 @@
 import 'dart:async';
 import 'dart:html' as html;
-import 'dart:io';
-import 'dart:typed_data';
-import 'package:camera/camera.dart';
+import 'dart:js' as js;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:google_mlkit_object_detection/google_mlkit_object_detection.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 import '../models/detection.dart';
 import '../models/tracked_object.dart';
-import '../services/gemini_service.dart';
-import '../services/speech_service.dart';
-import '../utils/constants.dart';
-import '../utils/detection_utils.dart';
-import '../widgets/detection_highlight.dart';
-import '../widgets/detection_label.dart';
-import 'package:video_player/video_player.dart';
-import 'package:image_picker/image_picker.dart';
 import '../models/point.dart';
 import '../models/bounding_box.dart';
+import '../widgets/detection_highlight.dart';
+import '../widgets/detection_label.dart';
+import 'dart:convert';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -27,49 +18,172 @@ class CameraScreen extends StatefulWidget {
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
-  CameraController? _cameraController;
+class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderStateMixin {
   VideoPlayerController? _videoController;
-  bool _isCameraInitialized = false;
-  bool _isRecording = false;
-  bool _isVideoMode = false;
+  bool _isVideoMode = true; // Default to video mode for web
   String? _errorMessage;
   List<TrackedObject> _trackedObjects = [];
-
+  Timer? _detectionTimer;
+  bool _isDetectorInitialized = false;
+  String? _videoUrl;
+  bool _isProcessingFrame = false;
+  
   @override
   void initState() {
     super.initState();
-    _initializeCamera();
+    _initializeDetector();
+    
+    // Show initial message
+    setState(() {
+      _errorMessage = 'Please upload a video to begin object detection.';
+    });
   }
-
-  Future<void> _initializeCamera() async {
-    try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        setState(() {
-          _errorMessage = 'No cameras found. You can still upload a video to test.';
-        });
-        return;
-      }
-
-      _cameraController = CameraController(
-        cameras.first,
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
-
-      await _cameraController!.initialize();
-      if (mounted) {
-        setState(() {
-          _isCameraInitialized = true;
-          _errorMessage = null;
-        });
-      }
-    } catch (e) {
+  
+  void _initializeDetector() {
+    // Set up callback for when detector is initialized
+    js.context['onDetectorInitialized'] = js.allowInterop((bool success) {
       setState(() {
-        _errorMessage = 'Camera initialization failed. You can still upload a video to test.\nError: $e';
+        _isDetectorInitialized = success;
+        if (!success) {
+          _errorMessage = 'Failed to initialize object detector.';
+        } else {
+          _errorMessage = _errorMessage == 'Failed to initialize object detector.' ? null : _errorMessage;
+        }
       });
+      print("Detector initialized: $success");
+    });
+    
+    // Set up callback for detection results
+    js.context['onDetectionComplete'] = js.allowInterop((String resultsJson) {
+      final results = json.decode(resultsJson);
+      _processDetectionResults(results);
+    });
+    
+    // Set up callback for tracking results
+    js.context['onTrackingComplete'] = js.allowInterop((String trackedObjectsJson) {
+      final List<dynamic> trackedObjectsData = json.decode(trackedObjectsJson);
+      
+      setState(() {
+        _trackedObjects = trackedObjectsData.map((data) {
+          final box = BoundingBox(
+            left: data['lastBox']['left'].toDouble(),
+            top: data['lastBox']['top'].toDouble(),
+            width: data['lastBox']['width'].toDouble(),
+            height: data['lastBox']['height'].toDouble(),
+          );
+          
+          final center = Point(
+            x: data['center']['x'].toDouble(),
+            y: data['center']['y'].toDouble(),
+          );
+          
+          final detection = Detection(
+            boundingBox: box,
+            categoryName: data['label'],
+            confidence: data['confidence'].toDouble(),
+            center: center,
+          );
+          
+          // Create a new TrackedObject with all required properties
+          return TrackedObject(
+            id: data['id'].toString(),
+            positions: [center],
+            timestamps: [DateTime.now()],
+            categoryName: data['label'],
+            speed: data['speed'].toDouble(),
+            direction: data['direction'].toDouble(),
+            velocity: Point(x: 0, y: 0),
+            lastSeen: DateTime.now(),
+            missingFrames: 0,
+            lastBox: box,
+            confidence: data['confidence'].toDouble(),
+          );
+        }).toList();
+        
+        _isProcessingFrame = false;
+      });
+    });
+    
+    // Initialize the detector in JavaScript
+    js.context.callMethod('initDetector');
+  }
+  
+  void _processDetectionResults(Map<String, dynamic> results) {
+    if (_videoController == null || !mounted) return;
+    
+    final frameWidth = _videoController!.value.size.width;
+    final frameHeight = _videoController!.value.size.height;
+    
+    // Forward the detection results to the tracking function
+    js.context.callMethod('trackObjects', [
+      json.encode(results),
+      frameWidth,
+      frameHeight,
+    ]);
+  }
+  
+  void _captureVideoFrame() {
+    if (_videoController == null || 
+        !_videoController!.value.isInitialized || 
+        !_videoController!.value.isPlaying ||
+        _isProcessingFrame ||
+        !_isDetectorInitialized ||
+        _videoUrl == null) {
+      return;
     }
+    
+    _isProcessingFrame = true;
+    
+    // Extract the current video time
+    final videoPosition = _videoController!.value.position.inMilliseconds / 1000.0;
+    
+    // Create a video element to capture the current frame
+    final videoElement = html.VideoElement()
+      ..src = _videoUrl!
+      ..currentTime = videoPosition;
+    
+    // When the video has loaded to the specified time
+    videoElement.onTimeUpdate.listen((_) {
+      // Create a canvas to draw the video frame
+      final canvas = html.CanvasElement(
+        width: _videoController!.value.size.width.toInt(),
+        height: _videoController!.value.size.height.toInt(),
+      );
+      
+      // Draw the current video frame to the canvas - fix parameter count
+      canvas.context2D.drawImageScaled(
+        videoElement, 
+        0, 
+        0, 
+        _videoController!.value.size.width, 
+        _videoController!.value.size.height
+      );
+      
+      // Convert canvas to data URL
+      final frameUrl = canvas.toDataUrl('image/jpeg');
+      
+      // Call the JavaScript detection function with the frame
+      js.context.callMethod('detectObjectsFromImage', [frameUrl]);
+      
+      // Clean up
+      videoElement.remove();
+    });
+    
+    // Handle errors
+    videoElement.onError.listen((_) {
+      print("Error capturing video frame");
+      _isProcessingFrame = false;
+    });
+  }
+  
+  void _startDetection() {
+    // Cancel any existing timer
+    _detectionTimer?.cancel();
+    
+    // Create a new timer to capture frames periodically
+    _detectionTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      _captureVideoFrame();
+    });
   }
 
   Future<void> _pickVideo() async {
@@ -102,9 +216,11 @@ class _CameraScreenState extends State<CameraScreen> {
         setState(() {
           _isVideoMode = true;
           _errorMessage = null;
-          // Add a sample tracked object for testing the UI
-          _addSampleObject();
+          _videoUrl = videoUrl;
+          _trackedObjects = [];
         });
+        
+        _startDetection();
       }
     } catch (e) {
       setState(() {
@@ -113,41 +229,23 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  void _addSampleObject() {
-    // Create a sample object for testing the UI
-    final box = BoundingBox(
-      left: 100,
-      top: 100,
-      width: 150,
-      height: 150,
-    );
-
-    final detection = Detection(
-      boundingBox: box,
-      categoryName: 'Sample Object',
-      confidence: 0.95,
-      center: Point(x: box.left + box.width / 2, y: box.top + box.height / 2),
-    );
-
-    final trackedObject = TrackedObject.fromDetection(detection);
-    _trackedObjects = [trackedObject];
-  }
-
   void _togglePlayback() {
     if (_videoController == null) return;
 
     setState(() {
       if (_videoController!.value.isPlaying) {
         _videoController!.pause();
+        _detectionTimer?.cancel();
       } else {
         _videoController!.play();
+        _startDetection();
       }
     });
   }
 
   @override
   void dispose() {
-    _cameraController?.dispose();
+    _detectionTimer?.cancel();
     _videoController?.dispose();
     super.dispose();
   }
@@ -191,24 +289,29 @@ class _CameraScreenState extends State<CameraScreen> {
                       painter: DetectionHighlight(
                         trackedObjects: _trackedObjects,
                       ),
-                    ),
-                    ..._trackedObjects.map((object) => Positioned(
-                      left: object.lastBox.left,
-                      top: object.lastBox.top,
-                      child: DetectionLabel(
-                        object: object,
-                        frameSize: Size(
-                          _videoController!.value.size.width,
-                          _videoController!.value.size.height,
-                        ),
+                      size: Size(
+                        _videoController!.value.size.width,
+                        _videoController!.value.size.height,
                       ),
-                    )),
+                    ),
+                    ..._trackedObjects.map((object) {
+                      final frameSize = Size(
+                        _videoController!.value.size.width,
+                        _videoController!.value.size.height,
+                      );
+                      return Positioned(
+                        left: object.lastBox.left,
+                        top: object.lastBox.top - 40,
+                        child: DetectionLabel(
+                          object: object,
+                          frameSize: frameSize,
+                        ),
+                      );
+                    }).toList(),
                   ],
                 ),
               ),
-            )
-          else if (_isCameraInitialized)
-            CameraPreview(_cameraController!),
+            ),
 
           // Controls Overlay
           Positioned(
@@ -218,17 +321,6 @@ class _CameraScreenState extends State<CameraScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                ElevatedButton.icon(
-                  onPressed: () {
-                    setState(() {
-                      _isVideoMode = false;
-                      _videoController?.pause();
-                      _trackedObjects.clear();
-                    });
-                  },
-                  icon: const Icon(Icons.camera),
-                  label: const Text('Camera'),
-                ),
                 ElevatedButton.icon(
                   onPressed: _pickVideo,
                   icon: const Icon(Icons.video_library),
@@ -262,9 +354,9 @@ class _CameraScreenState extends State<CameraScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    'Mode: ${_isVideoMode ? "Video" : "Camera"}',
-                    style: const TextStyle(color: Colors.white),
+                  const Text(
+                    'Mode: Video with Real-time Detection',
+                    style: TextStyle(color: Colors.white),
                   ),
                   const SizedBox(height: 8),
                   Text(

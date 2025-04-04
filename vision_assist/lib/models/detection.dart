@@ -15,14 +15,13 @@ class Detection {
   });
 
   factory Detection.fromMap(Map<String, dynamic> map) {
-    final box = BoundingBox.fromMap(map['boundingBox']);
     return Detection(
-      boundingBox: box,
-      categoryName: map['categoryName'] ?? '',
-      confidence: map['confidence']?.toDouble() ?? 0.0,
+      boundingBox: BoundingBox.fromMap(map['boundingBox']),
+      categoryName: map['categoryName'],
+      confidence: map['confidence'].toDouble(),
       center: Point(
-        x: box.left + box.width / 2,
-        y: box.top + box.height / 2,
+        x: map['center']['x'].toDouble(),
+        y: map['center']['y'].toDouble(),
       ),
     );
   }

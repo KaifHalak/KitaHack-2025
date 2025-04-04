@@ -70,7 +70,7 @@ class VideoService {
       
       return filePath;
     } catch (e) {
-      print('Error capturing frame: $e');
+      print('Error capturing frame: $e'); 
       return null;
     }
   }

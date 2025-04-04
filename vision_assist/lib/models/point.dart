@@ -7,6 +7,20 @@ class Point {
     required this.y,
   });
 
+  factory Point.fromMap(Map<String, dynamic> map) {
+    return Point(
+      x: map['x']?.toDouble() ?? 0.0,
+      y: map['y']?.toDouble() ?? 0.0,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'x': x,
+      'y': y,
+    };
+  }
+
   double distanceTo(Point other) {
     return (x - other.x) * (x - other.x) + (y - other.y) * (y - other.y);
   }

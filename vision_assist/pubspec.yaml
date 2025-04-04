@@ -35,19 +35,22 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.2
 
-  # Camera and Image Processing
-  camera: ^0.10.5+5
-  image: ^4.1.7
-  path_provider: ^2.1.2
-  permission_handler: ^11.0.1
+  # JavaScript interop for web
+  js: ^0.6.7
 
-  # ML and AI
-  google_mlkit_object_detection: ^0.10.0
-  google_mlkit_commons: ^0.5.0
-  google_generative_ai: ^0.2.0
+  # Camera and Image Processing - Commented out for web demo
+  # camera: ^0.10.5+5
+  # image: ^4.1.7
+  # path_provider: ^2.1.2
+  # permission_handler: ^11.0.1
+
+  # ML and AI - Commented out for web demo
+  # google_mlkit_object_detection: ^0.10.0
+  # google_mlkit_commons: ^0.5.0
+  # google_generative_ai: ^0.2.0
 
   # Speech and Audio
-  flutter_tts: ^3.8.5
+  # flutter_tts: ^3.8.5
 
   # State Management
   provider: ^6.1.1
@@ -56,11 +59,11 @@ dependencies:
   flutter_svg: ^2.0.9
   cached_network_image: ^3.3.1
 
-  # Additional Features
-  image_picker: ^1.0.7
+  # Additional Features - Only keeping video_player for the demo
+  # image_picker: ^1.0.7
   video_player: ^2.8.1
-  shared_preferences: ^2.2.2
-  http: ^1.1.0
+  # shared_preferences: ^2.2.2
+  # http: ^1.1.0
 
 dev_dependencies:
   flutter_test:
@@ -72,8 +75,8 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^2.0.0
-  mockito: ^5.4.4
-  build_runner: ^2.4.8
+  # mockito: ^5.4.4
+  # build_runner: ^2.4.8
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
