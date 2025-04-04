@@ -1,6 +1,7 @@
 // Use TensorFlow.js COCO-SSD model for real object detection
 let model = null;
 let isModelLoading = false;
+let lastAnnouncementTime = {}; // Track last announcement time per object class
 
 // Initialize detector - load the COCO-SSD model
 window.initDetector = async function () {
@@ -9,6 +10,17 @@ window.initDetector = async function () {
     if (typeof window.onDetectorInitialized === "function") {
       window.onDetectorInitialized(true);
     }
+
+    // Announce that the system is ready
+    if (window.speakText) {
+      window.speakText(
+        "Vision assist system ready. Upload a video to begin analysis.",
+        true,
+        1.0,
+        1.0
+      );
+    }
+
     return true;
   }
 
@@ -39,6 +51,16 @@ window.initDetector = async function () {
       window.onDetectorInitialized(true);
     }
 
+    // Announce that the system is ready
+    if (window.speakText) {
+      window.speakText(
+        "Vision assist system ready. Upload a video to begin analysis.",
+        true,
+        1.0,
+        1.0
+      );
+    }
+
     return true;
   } catch (error) {
     console.error("Error loading COCO-SSD model:", error);
@@ -47,6 +69,16 @@ window.initDetector = async function () {
     // Call the callback if it exists with failure status
     if (typeof window.onDetectorInitialized === "function") {
       window.onDetectorInitialized(false);
+    }
+
+    // Announce the error
+    if (window.speakText) {
+      window.speakText(
+        "Error initializing object detection. Please try again.",
+        true,
+        1.0,
+        1.0
+      );
     }
 
     return false;
@@ -63,6 +95,23 @@ const createImageFromUrl = (url) => {
     img.src = url;
   });
 };
+
+// High-priority objects that should be announced more frequently
+const IMPORTANT_OBJECTS = [
+  "person",
+  "car",
+  "truck",
+  "bus",
+  "motorcycle",
+  "bicycle",
+  "dog",
+  "chair",
+  "couch",
+  "bed",
+  "toilet",
+  "door",
+  "stairs",
+];
 
 // Detect objects from an image URL
 window.detectObjectsFromImage = async function (imageUrl) {
@@ -132,24 +181,88 @@ window.trackObjects = function (resultsJson, frameWidth, frameHeight) {
     const results =
       typeof resultsJson === "string" ? JSON.parse(resultsJson) : resultsJson;
     const detections = results.detections || [];
+    const currentTime = Date.now();
+    const announcementCooldown = 3000; // 3 seconds between announcements of the same class
+
+    // Sort detections by priority and proximity
+    detections.sort((a, b) => {
+      // Calculate area ratios (proxy for proximity)
+      const areaA =
+        (a.boundingBox.width * a.boundingBox.height) /
+        (frameWidth * frameHeight);
+      const areaB =
+        (b.boundingBox.width * b.boundingBox.height) /
+        (frameWidth * frameHeight);
+
+      // Check if objects are important
+      const aImportance = IMPORTANT_OBJECTS.includes(a.categoryName) ? 1 : 0;
+      const bImportance = IMPORTANT_OBJECTS.includes(b.categoryName) ? 1 : 0;
+
+      // Sort by importance first, then by proximity
+      if (aImportance !== bImportance) {
+        return bImportance - aImportance;
+      }
+
+      // Sort by proximity (area ratio)
+      return areaB - areaA;
+    });
 
     // For simplicity, we'll just use the detection results directly
     // A more advanced implementation would track objects across frames
     const trackedObjects = detections.map((detection, index) => {
+      const objectClass = detection.categoryName;
+      const confidence = detection.confidence;
+      const center = detection.center;
+
+      // Calculate ratio of object size to frame size (proxy for distance)
+      const areaRatio =
+        (detection.boundingBox.width * detection.boundingBox.height) /
+        (frameWidth * frameHeight);
+
+      // Determine proximity status
+      let proximityStatus = "Safe Distance";
+      if (areaRatio > 0.15) {
+        proximityStatus = "VERY CLOSE!";
+      } else if (areaRatio > 0.08) {
+        proximityStatus = "Getting Close";
+      }
+
+      // Get direction relative to center of frame
+      const direction = window.getRelativeDirection
+        ? window.getRelativeDirection(center.x, frameWidth)
+        : "front";
+
+      // Announce important objects with audio feedback
+      if (
+        window.announceObject &&
+        (IMPORTANT_OBJECTS.includes(objectClass) || areaRatio > 0.1)
+      ) {
+        // Limit announcement frequency
+        const lastTime = lastAnnouncementTime[objectClass] || 0;
+        if (currentTime - lastTime > announcementCooldown) {
+          lastAnnouncementTime[objectClass] = currentTime;
+          window.announceObject(
+            objectClass,
+            confidence,
+            direction,
+            proximityStatus
+          );
+        }
+      }
+
       return {
         id: index,
-        label: detection.categoryName,
-        confidence: detection.confidence,
+        label: objectClass,
+        confidence: confidence,
         speed: 0,
         direction: 0,
         lastBox: detection.boundingBox,
-        center: detection.center,
+        center: center,
         isMoving: false,
-        proximityStatus: "Safe Distance",
+        proximityStatus: proximityStatus,
         directionIndicator: "•",
-        areaRatio:
-          (detection.boundingBox.width * detection.boundingBox.height) /
-          (frameWidth * frameHeight),
+        areaRatio: areaRatio,
+        relativeDirection: direction,
       };
     });
 

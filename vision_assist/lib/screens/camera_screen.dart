@@ -27,6 +27,9 @@ class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderSt
   bool _isDetectorInitialized = false;
   String? _videoUrl;
   bool _isProcessingFrame = false;
+  bool _showControls = true;
+  bool _audioEnabled = true;
+  String _statusMessage = '';
   
   @override
   void initState() {
@@ -36,6 +39,7 @@ class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderSt
     // Show initial message
     setState(() {
       _errorMessage = 'Please upload a video to begin object detection.';
+      _statusMessage = 'Initializing vision assist system...';
     });
   }
   
@@ -46,8 +50,10 @@ class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderSt
         _isDetectorInitialized = success;
         if (!success) {
           _errorMessage = 'Failed to initialize object detector.';
+          _statusMessage = 'Error: Vision assist system not available';
         } else {
           _errorMessage = _errorMessage == 'Failed to initialize object detector.' ? null : _errorMessage;
+          _statusMessage = 'Vision assist system ready';
         }
       });
       print("Detector initialized: $success");
@@ -99,6 +105,36 @@ class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderSt
             confidence: data['confidence'].toDouble(),
           );
         }).toList();
+        
+        // Update status message with number of detected objects
+        if (_trackedObjects.isNotEmpty) {
+          _statusMessage = '${_trackedObjects.length} objects detected';
+          
+          // Find the closest object for status display
+          TrackedObject? closestObject;
+          double maxArea = 0;
+          Map<String, dynamic>? closestData;
+          
+          // Store the corresponding data for the closest object
+          for (var i = 0; i < _trackedObjects.length; i++) {
+            var obj = _trackedObjects[i];
+            final area = obj.lastBox.width * obj.lastBox.height;
+            if (area > maxArea) {
+              maxArea = area;
+              closestObject = obj;
+              if (i < trackedObjectsData.length) {
+                closestData = trackedObjectsData[i];
+              }
+            }
+          }
+          
+          if (closestObject != null && closestData != null) {
+            final relativeDirection = closestData['relativeDirection'] ?? 'front';
+            _statusMessage = '${closestObject.categoryName} ${relativeDirection}, ${closestData['proximityStatus'] ?? 'detected'}';
+          }
+        } else {
+          _statusMessage = 'No objects detected';
+        }
         
         _isProcessingFrame = false;
       });
@@ -218,6 +254,7 @@ class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderSt
           _errorMessage = null;
           _videoUrl = videoUrl;
           _trackedObjects = [];
+          _statusMessage = 'Video loaded, starting analysis...';
         });
         
         _startDetection();
@@ -236,10 +273,29 @@ class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderSt
       if (_videoController!.value.isPlaying) {
         _videoController!.pause();
         _detectionTimer?.cancel();
+        _statusMessage = 'Analysis paused';
       } else {
         _videoController!.play();
         _startDetection();
+        _statusMessage = 'Analyzing video...';
       }
+    });
+  }
+  
+  void _toggleAudio() {
+    setState(() {
+      _audioEnabled = !_audioEnabled;
+      
+      // Set audio state in JavaScript
+      js.context.callMethod('toggleAudio', [_audioEnabled]);
+      
+      _statusMessage = _audioEnabled ? 'Audio feedback enabled' : 'Audio feedback disabled';
+    });
+  }
+  
+  void _toggleControls() {
+    setState(() {
+      _showControls = !_showControls;
     });
   }
 
@@ -253,121 +309,191 @@ class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
-        children: [
-          // Main Content
-          if (_errorMessage != null)
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      _errorMessage!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.red),
-                    ),
-                    const SizedBox(height: 20),
-                    ElevatedButton.icon(
-                      onPressed: _pickVideo,
-                      icon: const Icon(Icons.video_library),
-                      label: const Text('Upload Video'),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          else if (_isVideoMode && _videoController != null)
-            Center(
-              child: AspectRatio(
-                aspectRatio: _videoController!.value.aspectRatio,
-                child: Stack(
-                  children: [
-                    VideoPlayer(_videoController!),
-                    CustomPaint(
-                      painter: DetectionHighlight(
-                        trackedObjects: _trackedObjects,
+      body: GestureDetector(
+        onTap: _toggleControls,
+        child: Stack(
+          children: [
+            // Main Content
+            if (_errorMessage != null)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        _errorMessage!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.red),
                       ),
-                      size: Size(
-                        _videoController!.value.size.width,
-                        _videoController!.value.size.height,
-                      ),
-                    ),
-                    ..._trackedObjects.map((object) {
-                      final frameSize = Size(
-                        _videoController!.value.size.width,
-                        _videoController!.value.size.height,
-                      );
-                      return Positioned(
-                        left: object.lastBox.left,
-                        top: object.lastBox.top - 40,
-                        child: DetectionLabel(
-                          object: object,
-                          frameSize: frameSize,
+                      const SizedBox(height: 20),
+                      ElevatedButton.icon(
+                        onPressed: _pickVideo,
+                        icon: const Icon(Icons.video_library),
+                        label: const Text('Upload Video'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                          textStyle: const TextStyle(fontSize: 18),
                         ),
-                      );
-                    }).toList(),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _statusMessage,
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else if (_isVideoMode && _videoController != null)
+              Center(
+                child: AspectRatio(
+                  aspectRatio: _videoController!.value.aspectRatio,
+                  child: Stack(
+                    children: [
+                      VideoPlayer(_videoController!),
+                      CustomPaint(
+                        painter: DetectionHighlight(
+                          trackedObjects: _trackedObjects,
+                        ),
+                        size: Size(
+                          _videoController!.value.size.width,
+                          _videoController!.value.size.height,
+                        ),
+                      ),
+                      ..._trackedObjects.map((object) {
+                        final frameSize = Size(
+                          _videoController!.value.size.width,
+                          _videoController!.value.size.height,
+                        );
+                        return Positioned(
+                          left: object.lastBox.left,
+                          top: object.lastBox.top - 40,
+                          child: DetectionLabel(
+                            object: object,
+                            frameSize: frameSize,
+                          ),
+                        );
+                      }).toList(),
+                    ],
+                  ),
+                ),
+              ),
+
+            // Controls Overlay (Only show when _showControls is true)
+            if (_showControls)
+              Positioned(
+                top: 40,
+                left: 0,
+                right: 0,
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: _pickVideo,
+                          icon: const Icon(Icons.video_library),
+                          label: const Text('Upload Video'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue.shade700,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                          ),
+                        ),
+                        if (_isVideoMode && _videoController != null)
+                          ElevatedButton.icon(
+                            onPressed: _togglePlayback,
+                            icon: Icon(
+                              _videoController!.value.isPlaying
+                                  ? Icons.pause
+                                  : Icons.play_arrow,
+                            ),
+                            label: Text(
+                              _videoController!.value.isPlaying ? 'Pause' : 'Play',
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue.shade700,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                            ),
+                          ),
+                        IconButton(
+                          onPressed: _toggleAudio, 
+                          icon: Icon(_audioEnabled ? Icons.volume_up : Icons.volume_off),
+                          tooltip: _audioEnabled ? 'Disable audio feedback' : 'Enable audio feedback',
+                          iconSize: 32,
+                          color: Colors.white,
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.blue.shade700,
+                            padding: const EdgeInsets.all(10),
+                          ),
+                        ),
+                      ],
+                    ),
+                    // Help text
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Text(
+                        'Tap screen to hide controls',
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            
+            // Detection Info Overlay
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.black54,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Mode: Video with Real-time Detection',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Text(
+                          'Objects Detected: ${_trackedObjects.length}',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade700,
+                            borderRadius: BorderRadius.circular(15),
+                          ),
+                          child: Text(
+                            _statusMessage,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
             ),
-
-          // Controls Overlay
-          Positioned(
-            top: 40,
-            left: 0,
-            right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _pickVideo,
-                  icon: const Icon(Icons.video_library),
-                  label: const Text('Upload Video'),
-                ),
-                if (_isVideoMode && _videoController != null)
-                  ElevatedButton.icon(
-                    onPressed: _togglePlayback,
-                    icon: Icon(
-                      _videoController!.value.isPlaying
-                          ? Icons.pause
-                          : Icons.play_arrow,
-                    ),
-                    label: Text(
-                      _videoController!.value.isPlaying ? 'Pause' : 'Play',
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          
-          // Detection Info Overlay
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              color: Colors.black54,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'Mode: Video with Real-time Detection',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Objects Detected: ${_trackedObjects.length}',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

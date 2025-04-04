@@ -36,6 +36,106 @@
     <!-- Load TensorFlow.js and COCO-SSD model before the Flutter-related scripts -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+    <!-- Audio feedback helper -->
+    <script>
+      // Text-to-speech utility
+      const speechSynthesis = window.speechSynthesis;
+      let speakingQueue = [];
+      let isSpeaking = false;
+      let audioEnabled = true;
+
+      // Toggle audio on/off
+      window.toggleAudio = function (enabled) {
+        audioEnabled = enabled;
+
+        if (!enabled) {
+          // Cancel any ongoing speech
+          speechSynthesis.cancel();
+          speakingQueue = [];
+          isSpeaking = false;
+        } else {
+          // Announce that audio is enabled
+          window.speakText("Audio feedback enabled", true);
+        }
+      };
+
+      // Speak text with specified options
+      window.speakText = function (
+        text,
+        priority = false,
+        rate = 1.0,
+        pitch = 1.0
+      ) {
+        if (!text || !audioEnabled) return;
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = rate;
+        utterance.pitch = pitch;
+
+        // If priority message, cancel current speech and speak immediately
+        if (priority) {
+          speechSynthesis.cancel();
+          speakingQueue = [];
+          speechSynthesis.speak(utterance);
+          return;
+        }
+
+        // Add to queue
+        speakingQueue.push(utterance);
+
+        // Process queue if not already speaking
+        if (!isSpeaking) {
+          processQueue();
+        }
+      };
+
+      // Process the speaking queue
+      function processQueue() {
+        if (speakingQueue.length === 0) {
+          isSpeaking = false;
+          return;
+        }
+
+        isSpeaking = true;
+        const utterance = speakingQueue.shift();
+
+        utterance.onend = () => {
+          setTimeout(() => processQueue(), 100); // Small delay between messages
+        };
+
+        speechSynthesis.speak(utterance);
+      }
+
+      // Get direction relative to camera center (left, right, center)
+      window.getRelativeDirection = function (objectX, frameWidth) {
+        const centerX = frameWidth / 2;
+        const threshold = frameWidth * 0.2; // 20% of frame width
+
+        if (objectX < centerX - threshold) {
+          return "left";
+        } else if (objectX > centerX + threshold) {
+          return "right";
+        } else {
+          return "front";
+        }
+      };
+
+      // Announce important objects and their locations
+      window.announceObject = function (
+        objectClass,
+        confidence,
+        direction,
+        proximity
+      ) {
+        // Only announce if confidence is high enough and audio is enabled
+        if (confidence < 0.65 || !audioEnabled) return;
+
+        const message = `${objectClass} ${direction}, ${proximity}`;
+        window.speakText(message, proximity === "VERY CLOSE!");
+      };
+    </script>
+
     <script src="object_detector.js"></script>
 
     <script>
