@@ -3,7 +3,6 @@ import 'dart:html' as html;
 import 'dart:js' as js;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:video_player/video_player.dart';
 import '../models/detection.dart';
 import '../models/tracked_object.dart';
 import '../models/point.dart';
@@ -11,8 +10,12 @@ import '../models/bounding_box.dart';
 import '../widgets/detection_highlight.dart';
 import '../widgets/detection_label.dart';
 import '../providers/accessibility_provider.dart';
+import '../providers/gemini_provider.dart';
 import 'accessibility_settings_screen.dart';
 import 'dart:convert';
+import '../services/object_detection_service.dart';
+import 'package:flutter/foundation.dart';
+import '../web/camera_preview.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -21,723 +24,693 @@ class CameraScreen extends StatefulWidget {
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> with SingleTickerProviderStateMixin {
-  VideoPlayerController? _videoController;
-  bool _isVideoMode = true; // Default to video mode for web
+class _CameraScreenState extends State<CameraScreen> {
+  bool _isDetectorInitialized = false;
+  bool _isProcessingFrame = false;
   String? _errorMessage;
+  String _statusMessage = '';
   List<TrackedObject> _trackedObjects = [];
   Timer? _detectionTimer;
-  bool _isDetectorInitialized = false;
-  String? _videoUrl;
-  bool _isProcessingFrame = false;
+  html.VideoElement? _cameraStream;
+  html.CanvasElement? _canvas;
+  html.CanvasRenderingContext2D? _ctx;
   bool _showControls = true;
-  bool _audioEnabled = true;
-  String _statusMessage = '';
-  
+  bool _isCameraInitialized = false;
+
   // Tap detection and counters for accessibility gestures
   int _tapCount = 0;
   Timer? _tapTimer;
   bool _isLongPress = false;
-  
+
+  // Last time a Gemini description was generated
+  DateTime _lastDescriptionTime =
+      DateTime.now().subtract(const Duration(seconds: 5));
+  // Timer for calling Gemini AI periodically
+  Timer? _descriptionTimer;
+
+  ObjectDetectionService _objectDetectionService = ObjectDetectionService();
+
   @override
   void initState() {
     super.initState();
     _initializeDetector();
-    
+
+    // Wait a moment for the UI to initialize before requesting camera access
+    Future.delayed(const Duration(milliseconds: 500), _initializeCamera);
+
     // Show initial message
     setState(() {
-      _errorMessage = 'Please upload a video to begin object detection.';
       _statusMessage = 'Initializing vision assist system...';
     });
-    
+
     // Announce the screen is ready for blind users
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
+      final accessibilityProvider =
+          Provider.of<AccessibilityProvider>(context, listen: false);
       if (accessibilityProvider.audioConfirmation) {
         accessibilityProvider.speakText(
-          "Vision assist ready. Double tap to upload a video. Swipe up to open accessibility settings.",
-          interrupt: true
-        );
+            "Vision assist ready. Camera feed will start shortly. Swipe up to open accessibility settings.",
+            interrupt: true);
       }
     });
   }
-  
+
+  Future<void> _initializeCamera() async {
+    try {
+      // Request camera access
+      final stream = await html.window.navigator.mediaDevices?.getUserMedia({
+        'video': {
+          'facingMode': 'environment', // Prefer rear camera
+          'width': {'ideal': 1280},
+          'height': {'ideal': 720}
+        }
+      });
+
+      if (stream != null) {
+        // Find the video element in the DOM
+        final videoElements = html.document.getElementsByTagName('video');
+        html.VideoElement? videoElement;
+
+        if (videoElements.isNotEmpty) {
+          videoElement = videoElements[0] as html.VideoElement;
+
+          // Connect the stream to the existing video element
+          videoElement.srcObject = stream;
+          videoElement.play();
+
+          // Store reference to the camera stream for processing
+          _cameraStream = videoElement;
+
+          // Create canvas for processing frames
+          _canvas = html.CanvasElement();
+          _ctx = _canvas!.context2D;
+
+          setState(() {
+            _errorMessage = null;
+            _statusMessage = 'Camera feed active';
+            _isCameraInitialized = true;
+          });
+
+          // Set up processing frames
+          _startDetection();
+          // Start Gemini description timer
+          _startDescriptionTimer();
+        } else {
+          throw Exception("Video element not found in the DOM");
+        }
+      } else {
+        throw Exception("Could not access camera stream");
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error accessing camera: $e';
+        _statusMessage = 'Camera access failed';
+        _isCameraInitialized = false;
+      });
+
+      final accessibilityProvider =
+          Provider.of<AccessibilityProvider>(context, listen: false);
+      if (accessibilityProvider.audioConfirmation) {
+        accessibilityProvider.speakText(
+            "Error accessing camera. Please check camera permissions.");
+      }
+    }
+  }
+
   void _initializeDetector() {
-    // Set up callback for when detector is initialized
-    js.context['onDetectorInitialized'] = js.allowInterop((bool success) {
+    _objectDetectionService.initialize().then((success) {
       setState(() {
         _isDetectorInitialized = success;
         if (!success) {
           _errorMessage = 'Failed to initialize object detector.';
           _statusMessage = 'Error: Vision assist system not available';
         } else {
-          _errorMessage = _errorMessage == 'Failed to initialize object detector.' ? null : _errorMessage;
+          _errorMessage =
+              _errorMessage == 'Failed to initialize object detector.'
+                  ? null
+                  : _errorMessage;
           _statusMessage = 'Vision assist system ready';
         }
       });
-      print("Detector initialized: $success");
     });
-    
-    // Set up callback for detection results
-    js.context['onDetectionComplete'] = js.allowInterop((String resultsJson) {
-      final results = json.decode(resultsJson);
-      _processDetectionResults(results);
-    });
-    
-    // Set up callback for tracking results
-    js.context['onTrackingComplete'] = js.allowInterop((String trackedObjectsJson) {
-      final List<dynamic> trackedObjectsData = json.decode(trackedObjectsJson);
-      
-      setState(() {
-        _trackedObjects = trackedObjectsData.map((data) {
-          final box = BoundingBox(
-            left: data['lastBox']['left'].toDouble(),
-            top: data['lastBox']['top'].toDouble(),
-            width: data['lastBox']['width'].toDouble(),
-            height: data['lastBox']['height'].toDouble(),
-          );
-          
-          final center = Point(
-            x: data['center']['x'].toDouble(),
-            y: data['center']['y'].toDouble(),
-          );
-          
-          final detection = Detection(
-            boundingBox: box,
-            categoryName: data['label'],
-            confidence: data['confidence'].toDouble(),
-            center: center,
-          );
-          
-          // Create a new TrackedObject with all required properties
-          return TrackedObject(
-            id: data['id'].toString(),
-            positions: [center],
-            timestamps: [DateTime.now()],
-            categoryName: data['label'],
-            speed: data['speed'].toDouble(),
-            direction: data['direction'].toDouble(),
-            velocity: Point(x: 0, y: 0),
-            lastSeen: DateTime.now(),
-            missingFrames: 0,
-            lastBox: box,
-            confidence: data['confidence'].toDouble(),
-          );
-        }).toList();
-        
-        // Update status message with number of detected objects
-        if (_trackedObjects.isNotEmpty) {
-          _statusMessage = '${_trackedObjects.length} objects detected';
-          
-          // Find the closest object for status display
-          TrackedObject? closestObject;
-          double maxArea = 0;
-          Map<String, dynamic>? closestData;
-          
-          // Store the corresponding data for the closest object
-          for (var i = 0; i < _trackedObjects.length; i++) {
-            var obj = _trackedObjects[i];
-            final area = obj.lastBox.width * obj.lastBox.height;
-            if (area > maxArea) {
-              maxArea = area;
-              closestObject = obj;
-              if (i < trackedObjectsData.length) {
-                closestData = trackedObjectsData[i];
-              }
-            }
+
+    // Listen for detections
+    _objectDetectionService.detectionsStream.listen((trackedObjects) {
+      if (mounted) {
+        setState(() {
+          _trackedObjects = trackedObjects;
+          _isProcessingFrame = false;
+
+          // Update status message with number of detected objects
+          if (_trackedObjects.isNotEmpty) {
+            _statusMessage = '${_trackedObjects.length} objects detected';
+          } else {
+            _statusMessage = 'No objects detected';
           }
-          
-          if (closestObject != null && closestData != null) {
-            final relativeDirection = closestData['relativeDirection'] ?? 'front';
-            _statusMessage = '${closestObject.categoryName} ${relativeDirection}, ${closestData['proximityStatus'] ?? 'detected'}';
-          }
-        } else {
-          _statusMessage = 'No objects detected';
-        }
-        
-        _isProcessingFrame = false;
-      });
+        });
+      }
     });
-    
-    // Initialize the detector in JavaScript
-    js.context.callMethod('initDetector');
   }
-  
-  void _processDetectionResults(Map<String, dynamic> results) {
-    if (_videoController == null || !mounted) return;
-    
-    final frameWidth = _videoController!.value.size.width;
-    final frameHeight = _videoController!.value.size.height;
-    
-    // Forward the detection results to the tracking function
-    js.context.callMethod('trackObjects', [
-      json.encode(results),
-      frameWidth,
-      frameHeight,
-    ]);
-  }
-  
+
   void _captureVideoFrame() {
-    if (_videoController == null || 
-        !_videoController!.value.isInitialized || 
-        !_videoController!.value.isPlaying ||
+    if (_cameraStream == null ||
+        _canvas == null ||
+        _ctx == null ||
         _isProcessingFrame ||
-        !_isDetectorInitialized ||
-        _videoUrl == null) {
+        !_isDetectorInitialized) {
       return;
     }
-    
+
     _isProcessingFrame = true;
-    
-    // Extract the current video time
-    final videoPosition = _videoController!.value.position.inMilliseconds / 1000.0;
-    
-    // Create a video element to capture the current frame
-    final videoElement = html.VideoElement()
-      ..src = _videoUrl!
-      ..currentTime = videoPosition;
-    
-    // When the video has loaded to the specified time
-    videoElement.onTimeUpdate.listen((_) {
-      // Create a canvas to draw the video frame
-      final canvas = html.CanvasElement(
-        width: _videoController!.value.size.width.toInt(),
-        height: _videoController!.value.size.height.toInt(),
-      );
-      
-      // Draw the current video frame to the canvas - fix parameter count
-      canvas.context2D.drawImageScaled(
-        videoElement, 
-        0, 
-        0, 
-        _videoController!.value.size.width, 
-        _videoController!.value.size.height
-      );
-      
-      // Convert canvas to data URL
-      final frameUrl = canvas.toDataUrl('image/jpeg');
-      
-      // Call the JavaScript detection function with the frame
-      js.context.callMethod('detectObjectsFromImage', [frameUrl]);
-      
-      // Clean up
-      videoElement.remove();
-    });
-    
-    // Handle errors
-    videoElement.onError.listen((_) {
-      print("Error capturing video frame");
+
+    // Process the current frame
+    _objectDetectionService.processCameraFrame(_cameraStream!).then((result) {
+      // Processing is done in the service
+      _isProcessingFrame = false;
+    }).catchError((error) {
+      print('Error processing frame: $error');
       _isProcessingFrame = false;
     });
   }
-  
+
   void _startDetection() {
     // Cancel any existing timer
     _detectionTimer?.cancel();
-    
+
     // Create a new timer to capture frames periodically
-    _detectionTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+    _detectionTimer =
+        Timer.periodic(const Duration(milliseconds: 500), (timer) {
       _captureVideoFrame();
     });
   }
 
-  Future<void> _pickVideo() async {
-    try {
-      final input = html.FileUploadInputElement()..accept = 'video/*';
-      input.click();
+  void _startDescriptionTimer() {
+    _descriptionTimer?.cancel();
 
-      // Get accessibility provider
-      final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
-      if (accessibilityProvider.audioConfirmation) {
-        accessibilityProvider.speakText("Please select a video file");
-      }
-
-      await input.onChange.first;
-      if (input.files?.isEmpty ?? true) return;
-
-      final file = input.files![0];
-      final url = html.Url.createObjectUrl(file);
-      
-      if (accessibilityProvider.audioConfirmation) {
-        accessibilityProvider.speakText("Video selected, loading...");
-      }
-      
-      await _loadVideo(url);
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Error picking video: $e';
-      });
-      
-      // Announce error
-      final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
-      if (accessibilityProvider.audioConfirmation) {
-        accessibilityProvider.speakText("Error selecting video: $e");
-      }
-    }
+    // Generate AI descriptions every 5 seconds
+    _descriptionTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _generateGeminiDescription();
+    });
   }
 
-  Future<void> _loadVideo(String videoUrl) async {
-    try {
-      _videoController?.dispose();
-      _videoController = VideoPlayerController.network(videoUrl);
+  Future<void> _generateGeminiDescription() async {
+    if (_trackedObjects.isEmpty) return;
 
-      await _videoController!.initialize();
-      await _videoController!.setLooping(true);
-      
-      if (mounted) {
-        setState(() {
-          _isVideoMode = true;
-          _errorMessage = null;
-          _videoUrl = videoUrl;
-          _trackedObjects = [];
-          _statusMessage = 'Video loaded, starting analysis...';
-        });
-        
-        // Get accessibility provider
-        final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
-        if (accessibilityProvider.audioConfirmation) {
-          accessibilityProvider.speakText("Video loaded. Starting object detection.");
-        }
-        
-        _startDetection();
-      }
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Error loading video: $e';
-      });
-      
-      // Announce error
-      final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
-      if (accessibilityProvider.audioConfirmation) {
-        accessibilityProvider.speakText("Error loading video: $e");
-      }
+    // Check if enough time has passed since the last description
+    final now = DateTime.now();
+    if (now.difference(_lastDescriptionTime).inSeconds < 5) {
+      return;
+    }
+
+    _lastDescriptionTime = now;
+
+    // Get the Gemini provider
+    final geminiProvider = Provider.of<GeminiProvider>(context, listen: false);
+    final accessibilityProvider =
+        Provider.of<AccessibilityProvider>(context, listen: false);
+
+    // Generate a description using Gemini
+    final description =
+        await geminiProvider.generateDescription(_trackedObjects);
+
+    if (description.isNotEmpty && accessibilityProvider.audioConfirmation) {
+      // Use the browser's speech synthesis to speak the description
+      js.context.callMethod('speakText', [description, true, 1.0, 1.0]);
     }
   }
 
   void _togglePlayback() {
-    if (_videoController == null) return;
+    if (_cameraStream == null) return;
 
     setState(() {
-      if (_videoController!.value.isPlaying) {
-        _videoController!.pause();
-        _detectionTimer?.cancel();
-        _statusMessage = 'Analysis paused';
-        
-        // Announce pause
-        final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
+      if (_cameraStream!.paused) {
+        _cameraStream!.play();
+        _startDetection();
+        _startDescriptionTimer();
+        _statusMessage = 'Analyzing camera feed...';
+
+        // Announce UI state only
+        final accessibilityProvider =
+            Provider.of<AccessibilityProvider>(context, listen: false);
         if (accessibilityProvider.audioConfirmation) {
-          accessibilityProvider.speakText("Video paused");
+          accessibilityProvider.speakText("Camera feed playing",
+              interrupt: true);
         }
       } else {
-        _videoController!.play();
-        _startDetection();
-        _statusMessage = 'Analyzing video...';
-        
-        // Announce play
-        final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
+        _cameraStream!.pause();
+        _detectionTimer?.cancel();
+        _descriptionTimer?.cancel();
+        _statusMessage = 'Analysis paused';
+
+        // Announce UI state only
+        final accessibilityProvider =
+            Provider.of<AccessibilityProvider>(context, listen: false);
         if (accessibilityProvider.audioConfirmation) {
-          accessibilityProvider.speakText("Video playing");
+          accessibilityProvider.speakText("Camera feed paused",
+              interrupt: true);
         }
       }
     });
   }
-  
-  void _toggleAudio() {
-    final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
-    accessibilityProvider.toggleAudioConfirmation();
-    
-    setState(() {
-      _audioEnabled = accessibilityProvider.audioConfirmation;
-      _statusMessage = _audioEnabled ? 'Audio feedback enabled' : 'Audio feedback disabled';
-    });
-  }
-  
+
   void _toggleControls() {
     setState(() {
       _showControls = !_showControls;
     });
-    
-    // Announce control visibility
-    final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
+
+    // Announce UI state only
+    final accessibilityProvider =
+        Provider.of<AccessibilityProvider>(context, listen: false);
     if (accessibilityProvider.audioConfirmation) {
-      accessibilityProvider.speakText(_showControls ? "Controls visible" : "Controls hidden");
+      accessibilityProvider.speakText(
+          _showControls ? "Controls visible" : "Controls hidden",
+          interrupt: true);
     }
   }
-  
+
   void _openAccessibilitySettings() {
-    final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
-    if (accessibilityProvider.audioConfirmation) {
-      accessibilityProvider.speakText("Opening accessibility settings");
-    }
-    
-    Navigator.of(context).push(
+    Navigator.push(
+      context,
       MaterialPageRoute(
         builder: (context) => const AccessibilitySettingsScreen(),
       ),
     );
   }
-  
-  // Handle tap count for multi-tap gestures
-  void _handleTap() {
+
+  void _onTap() {
     _tapCount++;
-    
-    _tapTimer?.cancel();
-    _tapTimer = Timer(const Duration(milliseconds: 300), () {
-      if (_tapCount == 1) {
-        // Single tap
-        _toggleControls();
-      } else if (_tapCount == 2) {
-        // Double tap
-        if (_errorMessage != null) {
-          _pickVideo();
+
+    if (_tapCount == 1) {
+      _tapTimer = Timer(const Duration(milliseconds: 300), () {
+        if (_tapCount == 1) {
+          // Single tap
+          _toggleControls();
         } else {
-          _togglePlayback();
+          // Double tap
+          if (_errorMessage != null) {
+            _initializeCamera();
+          } else {
+            _togglePlayback();
+          }
         }
-      } else if (_tapCount == 3) {
-        // Triple tap - stop all audio
-        js.context.callMethod('speakText', ["", true]);
-      }
-      
-      _tapCount = 0;
-    });
+        _tapCount = 0;
+      });
+    }
   }
-  
-  // Handle long press for detailed description
-  void _handleLongPressStart() {
+
+  void _onLongPress() {
     _isLongPress = true;
-    
-    // Describe the current screen for blind users
-    final accessibilityProvider = Provider.of<AccessibilityProvider>(context, listen: false);
+    final accessibilityProvider =
+        Provider.of<AccessibilityProvider>(context, listen: false);
+    final geminiProvider = Provider.of<GeminiProvider>(context, listen: false);
+
+    // Announce current status or Gemini description if available
     if (accessibilityProvider.audioConfirmation) {
       if (_errorMessage != null) {
         accessibilityProvider.speakText(
-          "Vision assist home screen. No video loaded. Double tap to upload a video. Swipe up to access settings.",
-          interrupt: true
-        );
-      } else if (_videoController != null) {
-        final objectCount = _trackedObjects.length;
-        final videoStatus = _videoController!.value.isPlaying ? "playing" : "paused";
-        
-        accessibilityProvider.speakText(
-          "Video $videoStatus. $objectCount objects detected. $_statusMessage. Double tap to ${videoStatus == 'playing' ? 'pause' : 'play'}. Swipe up for settings.",
-          interrupt: true
-        );
+            "Vision assist home screen. No camera feed. Double tap to start camera feed. Swipe up to access settings.",
+            interrupt: true);
+      } else if (_cameraStream != null) {
+        final description = geminiProvider.latestDescription;
+        if (description.isNotEmpty) {
+          // Use Gemini's description directly
+          js.context.callMethod('speakText', [description, true, 1.0, 1.0]);
+        } else {
+          // Only announce UI state
+          accessibilityProvider.speakText(
+              "Camera feed active. ${_trackedObjects.length} objects detected. Swipe up for settings.",
+              interrupt: true);
+        }
       }
     }
-  }
-  
-  void _handleLongPressEnd() {
+
     _isLongPress = false;
   }
 
   @override
   void dispose() {
     _detectionTimer?.cancel();
+    _descriptionTimer?.cancel();
     _tapTimer?.cancel();
-    _videoController?.dispose();
+    _cameraStream?.srcObject?.getTracks().forEach((track) => track.stop());
+    _objectDetectionService.dispose();
     super.dispose();
+  }
+
+  // Show settings bottom sheet
+  void _showSettingsBottomSheet(BuildContext context) {
+    final accessibilityProvider =
+        Provider.of<AccessibilityProvider>(context, listen: false);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => Container(
+          padding: const EdgeInsets.all(20),
+          child: Wrap(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.contrast),
+                title: const Text('High Contrast Mode'),
+                trailing: Switch(
+                  value: accessibilityProvider.highContrastMode,
+                  onChanged: (value) {
+                    accessibilityProvider.toggleHighContrastMode();
+                    setState(() {});
+                  },
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.volume_up),
+                title: const Text('Audio Confirmation'),
+                trailing: Switch(
+                  value: accessibilityProvider.audioConfirmation,
+                  onChanged: (value) {
+                    accessibilityProvider.toggleAudioConfirmation();
+                    setState(() {});
+                  },
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.text_fields),
+                title: const Text('Text Size'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.remove),
+                      onPressed: () {
+                        accessibilityProvider.decreaseTextSize();
+                        setState(() {});
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.add),
+                      onPressed: () {
+                        accessibilityProvider.increaseTextSize();
+                        setState(() {});
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.api),
+                title: const Text('Gemini API Key'),
+                subtitle: const Text('Set up or change your API key'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.pushNamed(context, '/api_key');
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<AccessibilityProvider>(
-      builder: (context, accessibilityProvider, child) {
-        return Scaffold(
-          body: GestureDetector(
-            // Basic tap detection
-            onTap: _handleTap,
-            
-            // Long press for detailed description
-            onLongPressStart: (_) => _handleLongPressStart(),
-            onLongPressEnd: (_) => _handleLongPressEnd(),
-            
-            // Swipe gestures for navigation
-            onVerticalDragEnd: (details) {
-              if (!accessibilityProvider.swipeNavigation) return;
-              
-              // Swipe up to open settings
-              if (details.primaryVelocity! < -500) {
-                _openAccessibilitySettings();
-              }
-              // Swipe down to show controls
-              else if (details.primaryVelocity! > 500 && !_showControls) {
-                setState(() {
-                  _showControls = true;
-                });
-                
-                if (accessibilityProvider.audioConfirmation) {
-                  accessibilityProvider.speakText("Controls visible");
-                }
-              }
+    final accessibilityProvider = Provider.of<AccessibilityProvider>(context);
+    final geminiProvider = Provider.of<GeminiProvider>(context);
+    final screenSize = MediaQuery.of(context).size;
+
+    // Determine if we should show the API key setup button
+    final showApiKeyButton = !geminiProvider.isInitialized;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          if (showApiKeyButton)
+            IconButton(
+              icon: const Icon(Icons.vpn_key, color: Colors.white),
+              onPressed: () {
+                Navigator.pushNamed(context, '/api_key');
+              },
+              tooltip: 'Set up Gemini API Key',
+            ),
+          IconButton(
+            icon: Icon(
+              Icons.settings,
+              color: Colors.white,
+              size: 28 * accessibilityProvider.iconScaleFactor,
+            ),
+            onPressed: () {
+              // Show settings or info sheet
+              _showSettingsBottomSheet(context);
             },
-            
-            child: Stack(
-              children: [
-                // Main Content
-                if (_errorMessage != null)
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            _errorMessage!,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(color: Colors.red),
-                          ),
-                          const SizedBox(height: 20),
-                          ElevatedButton.icon(
-                            onPressed: _pickVideo,
-                            icon: const Icon(Icons.video_library),
-                            label: const Text('Upload Video'),
-                            style: ElevatedButton.styleFrom(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 30 * accessibilityProvider.uiScaleFactor, 
-                                vertical: 15 * accessibilityProvider.uiScaleFactor
-                              ),
-                              textStyle: TextStyle(
-                                fontSize: 18 * accessibilityProvider.textScaleFactor
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            _statusMessage,
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                          const SizedBox(height: 30),
-                          // Accessibility options
-                          ElevatedButton.icon(
-                            onPressed: _openAccessibilitySettings,
-                            icon: const Icon(Icons.accessibility_new),
-                            label: const Text('Accessibility Settings'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.teal,
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 20 * accessibilityProvider.uiScaleFactor, 
-                                vertical: 12 * accessibilityProvider.uiScaleFactor
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+          ),
+        ],
+      ),
+      body: GestureDetector(
+        onTap: _onTap,
+        onLongPress: _onLongPress,
+        child: Stack(
+          children: [
+            // Black background (camera will display on top of this)
+            Container(
+              color: Colors.black,
+              width: screenSize.width,
+              height: screenSize.height,
+            ),
+
+            // Camera preview - this creates and displays the video element
+            Positioned.fill(
+              child: HtmlElementView(
+                viewType: 'camera-preview',
+              ),
+            ),
+
+            // Object detection overlay
+            if (_trackedObjects.isNotEmpty)
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: ObjectDetectionPainter(
+                    trackedObjects: _trackedObjects,
+                    frameSize: Size(
+                      screenSize.width,
+                      screenSize.height,
                     ),
-                  )
-                else if (_isVideoMode && _videoController != null)
-                  Center(
-                    child: AspectRatio(
-                      aspectRatio: _videoController!.value.aspectRatio,
-                      child: Stack(
-                        children: [
-                          VideoPlayer(_videoController!),
-                          CustomPaint(
-                            painter: DetectionHighlight(
-                              trackedObjects: _trackedObjects,
-                              highContrast: accessibilityProvider.highContrastMode,
-                            ),
-                            size: Size(
-                              _videoController!.value.size.width,
-                              _videoController!.value.size.height,
-                            ),
-                          ),
-                          ..._trackedObjects.map((object) {
-                            final frameSize = Size(
-                              _videoController!.value.size.width,
-                              _videoController!.value.size.height,
-                            );
-                            return Positioned(
-                              left: object.lastBox.left,
-                              top: object.lastBox.top - 40,
-                              child: DetectionLabel(
-                                object: object,
-                                frameSize: frameSize,
-                              ),
-                            );
-                          }).toList(),
-                        ],
-                      ),
-                    ),
+                    highContrast: accessibilityProvider.highContrastMode,
                   ),
-    
-                // Controls Overlay (Only show when _showControls is true)
-                if (_showControls)
-                  Positioned(
-                    top: 40,
-                    left: 0,
-                    right: 0,
-                    child: Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            ElevatedButton.icon(
-                              onPressed: _pickVideo,
-                              icon: Icon(
-                                Icons.video_library,
-                                size: 24 * accessibilityProvider.iconScaleFactor,
-                              ),
-                              label: Text(
-                                'Upload Video',
-                                style: TextStyle(
-                                  fontSize: 14 * accessibilityProvider.textScaleFactor,
-                                ),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.blue.shade700,
-                                foregroundColor: Colors.white,
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: 20 * accessibilityProvider.uiScaleFactor, 
-                                  vertical: 15 * accessibilityProvider.uiScaleFactor
-                                ),
-                              ),
-                            ),
-                            if (_isVideoMode && _videoController != null)
-                              ElevatedButton.icon(
-                                onPressed: _togglePlayback,
-                                icon: Icon(
-                                  _videoController!.value.isPlaying
-                                      ? Icons.pause
-                                      : Icons.play_arrow,
-                                  size: 24 * accessibilityProvider.iconScaleFactor,
-                                ),
-                                label: Text(
-                                  _videoController!.value.isPlaying ? 'Pause' : 'Play',
-                                  style: TextStyle(
-                                    fontSize: 14 * accessibilityProvider.textScaleFactor,
-                                  ),
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue.shade700,
-                                  foregroundColor: Colors.white,
-                                  padding: EdgeInsets.symmetric(
-                                    horizontal: 20 * accessibilityProvider.uiScaleFactor, 
-                                    vertical: 15 * accessibilityProvider.uiScaleFactor
-                                  ),
-                                ),
-                              ),
-                            IconButton(
-                              onPressed: _toggleAudio, 
-                              icon: Icon(
-                                accessibilityProvider.audioConfirmation ? Icons.volume_up : Icons.volume_off,
-                                size: 32 * accessibilityProvider.iconScaleFactor,
-                              ),
-                              tooltip: accessibilityProvider.audioConfirmation ? 'Disable audio feedback' : 'Enable audio feedback',
-                              color: Colors.white,
-                              style: IconButton.styleFrom(
-                                backgroundColor: Colors.blue.shade700,
-                                padding: EdgeInsets.all(10 * accessibilityProvider.uiScaleFactor),
-                              ),
-                            ),
-                            IconButton(
-                              onPressed: _openAccessibilitySettings, 
-                              icon: Icon(
-                                Icons.accessibility_new,
-                                size: 32 * accessibilityProvider.iconScaleFactor,
-                              ),
-                              tooltip: 'Accessibility Settings',
-                              color: Colors.white,
-                              style: IconButton.styleFrom(
-                                backgroundColor: Colors.teal,
-                                padding: EdgeInsets.all(10 * accessibilityProvider.uiScaleFactor),
-                              ),
-                            ),
-                          ],
-                        ),
-                        // Help text
-                        const SizedBox(height: 10),
-                        Container(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 20 * accessibilityProvider.uiScaleFactor, 
-                            vertical: 10 * accessibilityProvider.uiScaleFactor
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            'Tap screen to hide controls',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 14 * accessibilityProvider.textScaleFactor,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                
-                // Detection Info Overlay
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    padding: EdgeInsets.all(16 * accessibilityProvider.uiScaleFactor),
-                    color: Colors.black54,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
+                ),
+              ),
+
+            // Status overlay
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.black54,
+                child: SafeArea(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_errorMessage != null)
                         Text(
-                          'Mode: Video with Real-time Detection',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 14 * accessibilityProvider.textScaleFactor,
+                          _errorMessage!,
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                      Text(
+                        _statusMessage,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      if (geminiProvider.latestDescription.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            geminiProvider.latestDescription,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontStyle: FontStyle.italic,
+                            ),
                           ),
                         ),
-                        SizedBox(height: 8 * accessibilityProvider.uiScaleFactor),
-                        Row(
-                          children: [
-                            Text(
-                              'Objects Detected: ${_trackedObjects.length}',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 14 * accessibilityProvider.textScaleFactor,
-                              ),
-                            ),
-                            const Spacer(),
-                            Container(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 10 * accessibilityProvider.uiScaleFactor, 
-                                vertical: 5 * accessibilityProvider.uiScaleFactor
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.blue.shade700,
-                                borderRadius: BorderRadius.circular(15),
-                              ),
-                              child: Text(
-                                _statusMessage,
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14 * accessibilityProvider.textScaleFactor,
-                                ),
-                              ),
-                            ),
-                          ],
+
+                      // Debug button for camera access
+                      if (!_isCameraInitialized || _errorMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 16.0),
+                          child: ElevatedButton(
+                            onPressed: _initializeCamera,
+                            child: const Text('Request Camera Access'),
+                          ),
                         ),
-                        // Gesture hints
-                        if (accessibilityProvider.swipeNavigation)
-                          Padding(
-                            padding: EdgeInsets.only(top: 8 * accessibilityProvider.uiScaleFactor),
-                            child: Text(
-                              'Swipe up for settings • Double tap for video controls • Long press for description',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 12 * accessibilityProvider.textScaleFactor,
-                              ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            // Controls overlay
+            if (_showControls)
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  color: Colors.black54,
+                  child: SafeArea(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: _togglePlayback,
+                          icon: Icon(
+                            _cameraStream?.paused ?? true
+                                ? Icons.play_arrow
+                                : Icons.pause,
+                            size: 24 * accessibilityProvider.iconScaleFactor,
+                          ),
+                          label: Text(
+                            _cameraStream?.paused ?? true ? 'Start' : 'Pause',
+                            style: TextStyle(
+                              fontSize:
+                                  14 * accessibilityProvider.textScaleFactor,
                             ),
                           ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: _openAccessibilitySettings,
+                          icon: Icon(
+                            Icons.accessibility_new,
+                            size: 24 * accessibilityProvider.iconScaleFactor,
+                          ),
+                          label: Text(
+                            'Settings',
+                            style: TextStyle(
+                              fontSize:
+                                  14 * accessibilityProvider.textScaleFactor,
+                            ),
+                          ),
+                        ),
+                        // Button to force generate a description
+                        ElevatedButton.icon(
+                          onPressed: _generateGeminiDescription,
+                          icon: Icon(
+                            Icons.smart_toy,
+                            size: 24 * accessibilityProvider.iconScaleFactor,
+                          ),
+                          label: Text(
+                            'Describe',
+                            style: TextStyle(
+                              fontSize:
+                                  14 * accessibilityProvider.textScaleFactor,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
                 ),
-              ],
-            ),
-          ),
-        );
-      },
+              ),
+          ],
+        ),
+      ),
     );
   }
-} 
+}
+
+class ObjectDetectionPainter extends CustomPainter {
+  final List<TrackedObject> trackedObjects;
+  final Size frameSize;
+  final bool highContrast;
+
+  ObjectDetectionPainter({
+    required this.trackedObjects,
+    required this.frameSize,
+    this.highContrast = false,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint boxPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0;
+
+    final textPaint = Paint()..style = PaintingStyle.fill;
+
+    for (var object in trackedObjects) {
+      // Scale bounding box to fit the canvas
+      final double scaleX = size.width / frameSize.width;
+      final double scaleY = size.height / frameSize.height;
+
+      final scaledLeft = object.lastBox.left * scaleX;
+      final scaledTop = object.lastBox.top * scaleY;
+      final scaledWidth = object.lastBox.width * scaleX;
+      final scaledHeight = object.lastBox.height * scaleY;
+
+      final Rect rect = Rect.fromLTWH(
+        scaledLeft,
+        scaledTop,
+        scaledWidth,
+        scaledHeight,
+      );
+
+      // Choose color based on object type
+      Color color;
+      if (highContrast) {
+        color = Colors.yellow;
+      } else {
+        // Different colors for different object types
+        switch (object.categoryName) {
+          case 'person':
+            color = Colors.red;
+            break;
+          case 'car':
+          case 'truck':
+          case 'bus':
+            color = Colors.blue;
+            break;
+          case 'dog':
+          case 'cat':
+            color = Colors.green;
+            break;
+          default:
+            color = Colors.purple;
+        }
+      }
+
+      boxPaint.color = color;
+      canvas.drawRect(rect, boxPaint);
+
+      // Draw label
+      final textSpan = TextSpan(
+        text:
+            "${object.categoryName} ${(object.confidence * 100).toStringAsFixed(0)}%",
+        style: TextStyle(
+          color: highContrast ? Colors.black : Colors.white,
+          backgroundColor: color,
+          fontSize: 14,
+          fontWeight: FontWeight.bold,
+        ),
+      );
+
+      final textPainter = TextPainter(
+        text: textSpan,
+        textDirection: TextDirection.ltr,
+      );
+
+      textPainter.layout();
+      textPainter.paint(
+        canvas,
+        Offset(scaledLeft, scaledTop > 20 ? scaledTop - 20 : scaledTop),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(ObjectDetectionPainter oldDelegate) {
+    return oldDelegate.trackedObjects != trackedObjects ||
+        oldDelegate.frameSize != frameSize ||
+        oldDelegate.highContrast != highContrast;
+  }
+}

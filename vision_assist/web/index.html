@@ -1,20 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-    <base href="$FLUTTER_BASE_HREF" />
+    <base href="/" />
 
     <meta charset="UTF-8" />
     <meta content="IE=Edge" http-equiv="X-UA-Compatible" />
@@ -36,6 +23,7 @@
     <!-- Load TensorFlow.js and COCO-SSD model before the Flutter-related scripts -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="object_detector.js"></script>
 
     <!-- Audio feedback helper -->
     <script>
@@ -136,7 +124,61 @@
       };
     </script>
 
-    <script src="object_detector.js"></script>
+    <!-- Camera Preview Helper -->
+    <script>
+      // Function to update the camera preview with a video stream
+      window.updateCameraPreview = function(videoElement) {
+        // Find the HTML element with viewType 'camera-preview'
+        const findCameraPreview = () => {
+          const platformViews = document.querySelectorAll('flt-platform-view');
+          for (let i = 0; i < platformViews.length; i++) {
+            const view = platformViews[i];
+            if (view.dataset.viewType === 'camera-preview') {
+              return view;
+            }
+          }
+          return null;
+        };
+
+        // Try to find the camera preview element
+        const tryAttachCamera = () => {
+          const cameraPreview = findCameraPreview();
+          if (cameraPreview) {
+            // The platform view should already have a video element created by registerViewFactory
+            // Replace or update this element with our stream
+            const existingVideo = cameraPreview.querySelector('video');
+            if (existingVideo) {
+              // Replace the video element's source with our stream
+              existingVideo.srcObject = videoElement.srcObject;
+              existingVideo.play();
+              console.log('Camera preview updated with stream');
+            } else {
+              // If no video element exists, append our video element
+              cameraPreview.appendChild(videoElement);
+              console.log('Camera preview created with stream');
+            }
+            return true;
+          }
+          return false;
+        };
+
+        // Try immediately and then retry a few times if needed
+        if (!tryAttachCamera()) {
+          // Retry a few times with a delay
+          let attempts = 0;
+          const maxAttempts = 10;
+          const interval = setInterval(() => {
+            attempts++;
+            if (tryAttachCamera() || attempts >= maxAttempts) {
+              clearInterval(interval);
+              if (attempts >= maxAttempts) {
+                console.error('Failed to find camera preview element after', maxAttempts, 'attempts');
+              }
+            }
+          }, 200);
+        }
+      };
+    </script>
 
     <script>
       // The value below is injected by flutter build, do not touch.
@@ -149,10 +191,16 @@
     <script>
       window.addEventListener("load", function (ev) {
         // Download main.dart.js
-        var scriptTag = document.createElement("script");
-        scriptTag.src = "main.dart.js";
-        scriptTag.type = "application/javascript";
-        document.body.append(scriptTag);
+        _flutter.loader.loadEntrypoint({
+          serviceWorker: {
+            serviceWorkerVersion: serviceWorkerVersion,
+          },
+          onEntrypointLoaded: function (engineInitializer) {
+            engineInitializer.initializeEngine().then(function (appRunner) {
+              appRunner.runApp();
+            });
+          },
+        });
       });
     </script>
   </body>

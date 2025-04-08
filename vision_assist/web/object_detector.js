@@ -1,7 +1,7 @@
 // Use TensorFlow.js COCO-SSD model for real object detection
 let model = null;
 let isModelLoading = false;
-let lastAnnouncementTime = {}; // Track last announcement time per object class
+let objectIdCounter = 1; // Counter for generating unique object IDs
 
 // Initialize detector - load the COCO-SSD model
 window.initDetector = async function () {
@@ -14,7 +14,7 @@ window.initDetector = async function () {
     // Announce that the system is ready
     if (window.speakText) {
       window.speakText(
-        "Vision assist system ready. Upload a video to begin analysis.",
+        "Vision assist system ready. Camera feed will begin shortly.",
         true,
         1.0,
         1.0
@@ -54,7 +54,7 @@ window.initDetector = async function () {
     // Announce that the system is ready
     if (window.speakText) {
       window.speakText(
-        "Vision assist system ready. Upload a video to begin analysis.",
+        "Vision assist system ready. Camera feed will begin shortly.",
         true,
         1.0,
         1.0
@@ -113,174 +113,62 @@ const IMPORTANT_OBJECTS = [
   "stairs",
 ];
 
-// Detect objects from an image URL
-window.detectObjectsFromImage = async function (imageUrl) {
-  console.log(
-    "Detecting objects from image:",
-    imageUrl.substring(0, 50) + "..."
-  );
-
+// Detect objects from an image (dataURL) - used for camera frames
+window.detectObjectsFromImage = async function(imageDataUrl) {
   if (!model) {
-    await window.initDetector();
-    if (!model) {
-      console.error("Model not loaded, cannot detect objects");
-      return { detections: [] };
+    console.error("Model not loaded");
+    if (typeof window.onDetectionComplete === "function") {
+      window.onDetectionComplete(JSON.stringify([]));
     }
+    return;
   }
 
   try {
-    // Create image element from URL
-    const img = await createImageFromUrl(imageUrl);
-
-    // Run detection
+    // Create an image from the data URL
+    const img = await createImageFromUrl(imageDataUrl);
+    
+    // Perform detection
     const predictions = await model.detect(img);
-
-    // Convert to our expected format
-    const detections = predictions.map((prediction) => {
-      const [x, y, width, height] = prediction.bbox;
-
-      return {
-        boundingBox: {
-          left: x,
-          top: y,
-          width: width,
-          height: height,
-        },
-        categoryName: prediction.class,
-        confidence: prediction.score,
-        center: {
-          x: x + width / 2,
-          y: y + height / 2,
-        },
-      };
-    });
-
-    const result = { detections };
-
-    // Call the callback if it exists
-    if (typeof window.onDetectionComplete === "function") {
-      window.onDetectionComplete(JSON.stringify(result));
+    
+    // Add unique IDs to each prediction
+    const resultsWithIds = predictions.map(prediction => ({
+      ...prediction,
+      id: objectIdCounter++
+    }));
+    
+    // Log detections to console
+    if (resultsWithIds.length > 0) {
+      console.log(`Detected ${resultsWithIds.length} objects:`, 
+        resultsWithIds.map(obj => `${obj.class} (${Math.round(obj.score * 100)}%)`).join(', '));
     }
-
-    return result;
+    
+    // Return the results
+    if (typeof window.onDetectionComplete === "function") {
+      window.onDetectionComplete(JSON.stringify(resultsWithIds));
+    }
   } catch (error) {
-    console.error("Error during object detection:", error);
-
-    // Call the callback if it exists
+    console.error("Error detecting objects:", error);
     if (typeof window.onDetectionComplete === "function") {
-      window.onDetectionComplete(JSON.stringify({ detections: [] }));
+      window.onDetectionComplete(JSON.stringify([]));
     }
-
-    return { detections: [] };
   }
 };
 
-// Track objects - implemented as a simple pass-through for now
-window.trackObjects = function (resultsJson, frameWidth, frameHeight) {
+// Track objects across frames
+window.trackObjects = function(detectionResultsJson, frameWidth, frameHeight) {
   try {
-    const results =
-      typeof resultsJson === "string" ? JSON.parse(resultsJson) : resultsJson;
-    const detections = results.detections || [];
-    const currentTime = Date.now();
-    const announcementCooldown = 3000; // 3 seconds between announcements of the same class
-
-    // Sort detections by priority and proximity
-    detections.sort((a, b) => {
-      // Calculate area ratios (proxy for proximity)
-      const areaA =
-        (a.boundingBox.width * a.boundingBox.height) /
-        (frameWidth * frameHeight);
-      const areaB =
-        (b.boundingBox.width * b.boundingBox.height) /
-        (frameWidth * frameHeight);
-
-      // Check if objects are important
-      const aImportance = IMPORTANT_OBJECTS.includes(a.categoryName) ? 1 : 0;
-      const bImportance = IMPORTANT_OBJECTS.includes(b.categoryName) ? 1 : 0;
-
-      // Sort by importance first, then by proximity
-      if (aImportance !== bImportance) {
-        return bImportance - aImportance;
-      }
-
-      // Sort by proximity (area ratio)
-      return areaB - areaA;
-    });
-
-    // For simplicity, we'll just use the detection results directly
-    // A more advanced implementation would track objects across frames
-    const trackedObjects = detections.map((detection, index) => {
-      const objectClass = detection.categoryName;
-      const confidence = detection.confidence;
-      const center = detection.center;
-
-      // Calculate ratio of object size to frame size (proxy for distance)
-      const areaRatio =
-        (detection.boundingBox.width * detection.boundingBox.height) /
-        (frameWidth * frameHeight);
-
-      // Determine proximity status
-      let proximityStatus = "Safe Distance";
-      if (areaRatio > 0.15) {
-        proximityStatus = "VERY CLOSE!";
-      } else if (areaRatio > 0.08) {
-        proximityStatus = "Getting Close";
-      }
-
-      // Get direction relative to center of frame
-      const direction = window.getRelativeDirection
-        ? window.getRelativeDirection(center.x, frameWidth)
-        : "front";
-
-      // Announce important objects with audio feedback
-      if (
-        window.announceObject &&
-        (IMPORTANT_OBJECTS.includes(objectClass) || areaRatio > 0.1)
-      ) {
-        // Limit announcement frequency
-        const lastTime = lastAnnouncementTime[objectClass] || 0;
-        if (currentTime - lastTime > announcementCooldown) {
-          lastAnnouncementTime[objectClass] = currentTime;
-          window.announceObject(
-            objectClass,
-            confidence,
-            direction,
-            proximityStatus
-          );
-        }
-      }
-
-      return {
-        id: index,
-        label: objectClass,
-        confidence: confidence,
-        speed: 0,
-        direction: 0,
-        lastBox: detection.boundingBox,
-        center: center,
-        isMoving: false,
-        proximityStatus: proximityStatus,
-        directionIndicator: "•",
-        areaRatio: areaRatio,
-        relativeDirection: direction,
-      };
-    });
-
-    // Call the callback if it exists
+    // Parse detection results
+    const detections = JSON.parse(detectionResultsJson);
+    
+    // Process tracking results
     if (typeof window.onTrackingComplete === "function") {
-      window.onTrackingComplete(JSON.stringify(trackedObjects));
+      window.onTrackingComplete(JSON.stringify(detections));
     }
-
-    return trackedObjects;
   } catch (error) {
-    console.error("Error during tracking:", error);
-
-    // Call the callback if it exists
+    console.error("Error tracking objects:", error);
     if (typeof window.onTrackingComplete === "function") {
       window.onTrackingComplete(JSON.stringify([]));
     }
-
-    return [];
   }
 };
 

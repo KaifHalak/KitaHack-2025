@@ -36,7 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.2
 
   # JavaScript interop for web
-  js: ^0.6.7
+  js: ^0.7.0
 
   # Camera and Image Processing - Commented out for web demo
   camera: ^0.10.5+5
@@ -47,7 +47,7 @@ dependencies:
   # ML and AI - Commented out for web demo
   # google_mlkit_object_detection: ^0.10.0
   # google_mlkit_commons: ^0.5.0
-  # google_generative_ai: ^0.2.0
+  google_generative_ai: ^0.2.0
 
   # Speech and Audio
   # flutter_tts: ^3.8.5
@@ -63,6 +63,8 @@ dependencies:
   video_player: ^2.7.0
   shared_preferences: ^2.2.2
   http: ^1.1.0
+  flutter_dotenv: ^5.1.0
+  url_launcher: ^6.2.5
 
 dev_dependencies:
   flutter_test:
@@ -90,6 +92,7 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - assets/images/
+    - .env
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
