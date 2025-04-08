@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'dart:html' as html;
 import 'dart:ui_web' as ui_web;
+import 'dart:js' as js;
 import 'screens/camera_screen.dart';
 import 'screens/api_key_screen.dart';
 import 'providers/accessibility_provider.dart';
@@ -14,6 +15,24 @@ Future<void> main() async {
 
   // Load environment variables
   await dotenv.load(fileName: '.env');
+
+  // Inject Google Maps API key into JavaScript environment
+  final mapsApiKey = dotenv.env['MAPS_API_KEY'] ?? '';
+  if (mapsApiKey.isEmpty || mapsApiKey.contains('PLACEHOLDER')) {
+    print('WARNING: MAPS_API_KEY is not set properly in .env file.');
+    print('Please set a valid Google Maps API key in the .env file.');
+  } else {
+    print(
+        'Maps API key loaded successfully from .env file: ${mapsApiKey.substring(0, 5)}...');
+  }
+
+  // Make API key available to JavaScript
+  js.context.callMethod('eval', [
+    '''
+    window.MAPS_API_KEY = '$mapsApiKey';
+    console.log('Maps API key set from Dart: ' + (window.MAPS_API_KEY ? 'Success' : 'Failed'));
+  '''
+  ]);
 
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
@@ -36,6 +55,27 @@ Future<void> main() async {
       videoElement.setAttribute('playsinline', 'true');
 
       return videoElement;
+    },
+  );
+
+  // Register the map container factory
+  ui_web.platformViewRegistry.registerViewFactory(
+    'map-container',
+    (int viewId) {
+      final mapDiv = html.DivElement()
+        ..id = 'map'
+        ..style.width = '100%'
+        ..style.height = '100%';
+
+      // Initialize Google Maps JavaScript functions
+      if (js.context['initMap'] == null) {
+        js.context['initMap'] = js.allowInterop(() {
+          // This function will be called by the Google Maps API
+          print("initMap callback from Google Maps API");
+        });
+      }
+
+      return mapDiv;
     },
   );
 

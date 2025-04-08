@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <base href="/" />
+    <base href="$FLUTTER_BASE_HREF" />
 
     <meta charset="UTF-8" />
     <meta content="IE=Edge" http-equiv="X-UA-Compatible" />
-    <meta name="description" content="A visual assistance application" />
+    <meta name="description" content="A vision assistance app for visually impaired users." />
 
     <!-- iOS meta tags & icons -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -19,6 +19,72 @@
 
     <title>Vision Assist</title>
     <link rel="manifest" href="manifest.json" />
+
+    <!-- Load Google Maps JavaScript API -->
+    <script>
+      // Function to load Google Maps with API key from environment
+      function loadGoogleMaps() {
+        // Get API key - will be set by Dart code
+        const apiKey = window.MAPS_API_KEY || '';
+        
+        if (!apiKey || apiKey === 'MAPS_API_KEY_PLACEHOLDER') {
+          console.error('Invalid Google Maps API key');
+          return;
+        }
+        
+        console.log('Loading Google Maps with API key:', apiKey.substring(0, 4) + '...');
+        
+        // Remove any existing Google Maps script tags
+        const existingScripts = document.querySelectorAll('script[src*="maps.googleapis.com"]');
+        existingScripts.forEach(script => script.remove());
+        
+        const script = document.createElement('script');
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,geometry&loading=async&callback=initMap`;
+        script.async = true;
+        script.defer = true;
+        document.head.appendChild(script);
+      }
+      
+      // Initialize a global placeholder that will be replaced by Dart code
+      window.MAPS_API_KEY = '';
+      
+      // Wait for Dart to set the API key, then load the map
+      let checkApiKeyInterval = setInterval(() => {
+        if (window.MAPS_API_KEY && window.MAPS_API_KEY !== 'MAPS_API_KEY_PLACEHOLDER') {
+          clearInterval(checkApiKeyInterval);
+          loadGoogleMaps();
+        }
+      }, 500);
+      
+      setTimeout(() => {
+        clearInterval(checkApiKeyInterval);
+        if (!window.MAPS_API_KEY || window.MAPS_API_KEY === 'MAPS_API_KEY_PLACEHOLDER') {
+          console.error('Timed out waiting for Maps API key');
+        }
+      }, 10000); // Timeout after 10 seconds
+    </script>
+    
+    <style>
+      #map-container {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        width: 300px;
+        height: 200px;
+        z-index: 1;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+      }
+      #map {
+        width: 100%;
+        height: 100%;
+      }
+      #flutter_target {
+        position: relative;
+        z-index: 2;
+      }
+    </style>
 
     <!-- Load TensorFlow.js and COCO-SSD model before the Flutter-related scripts -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0"></script>
@@ -165,80 +231,52 @@
         window.speakText(message, proximity === "VERY CLOSE!");
       };
 
-      // Play audio from base64 string
-      window.playAudioFromBase64 = function(base64String) {
-        if (!base64String || !audioEnabled) return;
+      // Play audio from a URL
+      window.playAudioFromUrl = function(url) {
+        if (!url || !audioEnabled) return;
         
         try {
           // Cancel any ongoing speech
           speechSynthesis.cancel();
           
-          // Create audio from the base64 string
-          const audio = new Audio(`data:audio/mp3;base64,${base64String}`);
+          // Create audio element
+          const audio = new Audio(url);
           
-          // Set up audio event listeners
-          geminiAudioPlaying = true;
+          // Set flag when playback starts
+          audio.onplaying = function() {
+            geminiAudioPlaying = true;
+            console.log("Gemini audio playback started");
+          };
           
+          // Clear flag when playback ends
           audio.onended = function() {
             geminiAudioPlaying = false;
             console.log("Gemini audio playback completed");
           };
           
-          audio.onerror = function() {
-            geminiAudioPlaying = false;
-            console.error("Error in Gemini audio playback");
-          };
-          
-          // Play the audio
-          audio.play().catch(error => {
-            console.error('Error playing audio:', error);
-            geminiAudioPlaying = false;
-          });
-        } catch (error) {
-          console.error('Error creating audio from base64:', error);
-          geminiAudioPlaying = false;
-        }
-      };
-      
-      // Play audio from a data URL
-      window.playAudioFromUrl = function(audioUrl) {
-        if (!audioUrl || !audioEnabled) return;
-        
-        try {
-          // Cancel any ongoing speech
-          speechSynthesis.cancel();
-          
-          // Create and play audio from URL
-          const audio = new Audio(audioUrl);
-          
-          // Set up audio event listeners
-          geminiAudioPlaying = true;
-          
-          audio.onended = function() {
-            geminiAudioPlaying = false;
-            console.log("Gemini audio playback completed");
-          };
-          
-          audio.onerror = function() {
-            geminiAudioPlaying = false;
-            console.error("Error in Gemini audio playback");
-          };
-          
-          // Play the audio
-          audio.play().catch(error => {
-            console.error('Error playing audio from URL:', error);
+          // Handle errors
+          audio.onerror = function(e) {
+            console.error("Gemini audio playback error:", e);
             geminiAudioPlaying = false;
             
-            // If playback fails, try to extract the base64 content
-            if (audioUrl.startsWith('data:audio/mp3;base64,')) {
-              const base64Data = audioUrl.split(',')[1];
-              if (base64Data) {
-                window.playAudioFromBase64(base64Data);
-              }
+            // Fall back to reading the description using speech synthesis
+            if (window.lastGeminiDescription) {
+              window.speakText(window.lastGeminiDescription, true);
+            }
+          };
+          
+          // Start playback
+          audio.play().catch(e => {
+            console.error("Error playing Gemini audio:", e);
+            geminiAudioPlaying = false;
+            
+            // Fall back to reading the description using speech synthesis
+            if (window.lastGeminiDescription) {
+              window.speakText(window.lastGeminiDescription, true);
             }
           });
-        } catch (error) {
-          console.error('Error playing audio from URL:', error);
+        } catch (e) {
+          console.error("Error setting up Gemini audio playback:", e);
           geminiAudioPlaying = false;
         }
       };
@@ -301,13 +339,148 @@
     </script>
 
     <script>
+      // Web Speech API Implementation
+      let speechRecognition = null;
+      let currentSpeechCallback = null;
+
+      // Function to initialize speech recognition
+      function initSpeechRecognition() {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+          console.error('Speech recognition not supported');
+          return false;
+        }
+        
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        speechRecognition = new SpeechRecognition();
+        speechRecognition.continuous = false;
+        speechRecognition.interimResults = true;
+        speechRecognition.lang = 'en-US';
+        
+        speechRecognition.onstart = () => {
+          console.log('Speech recognition started');
+        };
+        
+        speechRecognition.onerror = (event) => {
+          console.error('Speech recognition error:', event.error);
+          
+          // If callback exists, notify about the error
+          if (currentSpeechCallback) {
+            currentSpeechCallback(`Error: ${event.error}`, 0);
+          }
+        };
+        
+        speechRecognition.onend = () => {
+          console.log('Speech recognition ended');
+        };
+        
+        speechRecognition.onresult = (event) => {
+          // Get the latest result
+          const lastResult = event.results[event.results.length - 1];
+          const transcript = lastResult[0].transcript;
+          const confidence = lastResult[0].confidence;
+          const isFinal = lastResult.isFinal;
+          
+          console.log('Recognition result:', transcript, 'Confidence:', confidence, 'Final:', isFinal);
+          
+          // Always call the callback to update UI with partial results
+          if (currentSpeechCallback) {
+            // For final results, include confidence
+            if (isFinal) {
+              currentSpeechCallback(transcript, confidence);
+            } else {
+              // For partial results, send lower confidence to indicate it's not final
+              currentSpeechCallback("Hearing: " + transcript, 0.5);
+            }
+          }
+        };
+        
+        return true;
+      }
+      
+      // Function to start listening for speech
+      function startSpeechRecognition(callback) {
+        if (!speechRecognition) {
+          const initialized = initSpeechRecognition();
+          if (!initialized) {
+            console.error('Failed to initialize speech recognition');
+            return false;
+          }
+        }
+        
+        try {
+          stopSpeechSynthesis(); // Stop any ongoing speech
+          
+          currentSpeechCallback = callback;
+          speechRecognition.start();
+          return true;
+        } catch (e) {
+          console.error('Error starting speech recognition:', e);
+          return false;
+        }
+      }
+      
+      // Function to stop listening
+      function stopSpeechRecognition() {
+        if (speechRecognition) {
+          try {
+            speechRecognition.stop();
+            return true;
+          } catch (e) {
+            console.error('Error stopping speech recognition:', e);
+          }
+        }
+        return false;
+      }
+      
+      // Text-to-speech synthesis
+      let speechSynthesisUtterance = null;
+      
+      function speakText(text, interrupt = false, rate = 1.0, pitch = 1.0) {
+        if (!('speechSynthesis' in window)) {
+          console.error('Speech synthesis not supported');
+          return false;
+        }
+        
+        if (interrupt) {
+          stopSpeechSynthesis();
+        }
+        
+        speechSynthesisUtterance = new SpeechSynthesisUtterance(text);
+        speechSynthesisUtterance.rate = rate;
+        speechSynthesisUtterance.pitch = pitch;
+        speechSynthesisUtterance.onend = () => {
+          console.log('Speech synthesis completed');
+        };
+        
+        window.speechSynthesis.speak(speechSynthesisUtterance);
+        return true;
+      }
+      
+      function stopSpeechSynthesis() {
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+        }
+      }
+      
+      // Function to stop Gemini audio
+      function stopGeminiAudio() {
+        stopSpeechSynthesis();
+      }
+    </script>
+
+    <script>
       // The value below is injected by flutter build, do not touch.
       var serviceWorkerVersion = "{{flutter_service_worker_version}}";
     </script>
     <!-- This script adds the flutter initialization JS code -->
     <script src="flutter.js" defer></script>
+    <script src="google_maps.js" defer></script>
   </head>
   <body>
+    <div id="map-container">
+      <div id="map"></div>
+    </div>
+    <div id="flutter_target"></div>
     <script>
       window.addEventListener("load", function (ev) {
         // Download main.dart.js

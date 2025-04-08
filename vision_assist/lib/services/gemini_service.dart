@@ -4,6 +4,7 @@ import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:http/http.dart' as http;
 import '../models/tracked_object.dart';
 import '../models/bounding_box.dart';
+import '../models/navigation_state.dart';
 
 class GeminiService {
   final String _apiKey;
@@ -35,7 +36,9 @@ class GeminiService {
   }
 
   Future<Map<String, dynamic>> generateVoiceDescription(
-      List<TrackedObject> objects, String? imageBase64) async {
+      List<TrackedObject> objects,
+      String? imageBase64,
+      NavigationState? navigationState) async {
     if (!_isInitialized || _model == null || objects.isEmpty) {
       return {'text': '', 'audioUrl': ''};
     }
@@ -73,11 +76,30 @@ class GeminiService {
         return "$category: $objectsList";
       }).join("\n");
 
+      // Add navigation context if available
+      String navigationContext = '';
+      if (navigationState != null && navigationState.isNavigating) {
+        if (navigationState.hasReachedDestination) {
+          navigationContext =
+              "You have reached your destination: ${navigationState.destination}";
+        } else if (navigationState.navigationInstruction != null) {
+          navigationContext = """
+Navigation information:
+Destination: ${navigationState.destination}
+Current instruction: ${navigationState.navigationInstruction}
+Distance remaining: ${navigationState.distance ?? 'unknown'}
+Estimated time: ${navigationState.duration ?? 'unknown'}
+""";
+        }
+      }
+
       final promptText = """
       You are a visual assistant for a blind person. Analyze both the scene image and the detected objects list to provide a concise, natural-sounding voice announcement that would be helpful for a blind person navigating their environment.
 
       Detected objects:
       $objectsText
+      
+      ${navigationContext.isNotEmpty ? "Navigation context:\n$navigationContext\n" : ""}
       
       Focus on immediate spatial relationships, potential hazards, and use conversational language. Keep responses concise and informative.
       
@@ -92,6 +114,8 @@ class GeminiService {
       - Mention approximate distances and directions when useful
       - Use natural speech patterns a human guide would use
       - Use the voice of a friendly male guide
+      - If navigation is active, prioritize navigation instructions and potential obstacles
+      - Include turn-by-turn directions from the navigation context
       """;
 
       // Generate the text description using Gemini 2.0 Flash with multimodal input

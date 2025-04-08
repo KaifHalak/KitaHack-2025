@@ -16,6 +16,29 @@ import 'dart:convert';
 import '../services/object_detection_service.dart';
 import 'package:flutter/foundation.dart';
 import '../web/camera_preview.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../providers/gemini_provider.dart';
+import '../services/navigation_service.dart';
+import '../models/navigation_state.dart';
+
+// Predefined locations
+final List<Map<String, dynamic>> predefinedLocations = [
+  {
+    'name': 'MJIIT UTM KL',
+    'latitude': 3.1578,
+    'longitude': 101.7116,
+  },
+  {
+    'name': 'KLCC',
+    'latitude': 3.1579,
+    'longitude': 101.7117,
+  },
+  {
+    'name': 'Ampang Park',
+    'latitude': 3.1580,
+    'longitude': 101.7118,
+  },
+];
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -49,6 +72,8 @@ class _CameraScreenState extends State<CameraScreen> {
   Timer? _descriptionTimer;
 
   ObjectDetectionService _objectDetectionService = ObjectDetectionService();
+  late NavigationService _navigationService;
+  bool _isNavigating = false;
 
   @override
   void initState() {
@@ -73,6 +98,9 @@ class _CameraScreenState extends State<CameraScreen> {
             interrupt: true);
       }
     });
+
+    _navigationService = NavigationService(context);
+    _initializeNavigation();
   }
 
   Future<void> _initializeCamera() async {
@@ -264,19 +292,21 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     // Generate a voice description using Gemini with male voice and image
-    final result = await geminiProvider.generateVoiceDescription(
+    await geminiProvider.generateDescription(
       _trackedObjects,
-      imageBase64: imageBase64,
+      imageBase64,
     );
 
-    if (result['text'].isNotEmpty && accessibilityProvider.audioConfirmation) {
+    if (geminiProvider.latestDescription.isNotEmpty &&
+        accessibilityProvider.audioConfirmation) {
       setState(() {
         _statusMessage = 'Playing AI voice description...';
       });
 
       // If we have audio URL, play it directly using the JavaScript function
-      if (result['audioUrl'].isNotEmpty) {
-        js.context.callMethod('playAudioFromUrl', [result['audioUrl']]);
+      if (geminiProvider.latestAudioUrl.isNotEmpty) {
+        js.context
+            .callMethod('playAudioFromUrl', [geminiProvider.latestAudioUrl]);
       }
     }
   }
@@ -396,6 +426,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
+    _navigationService.dispose();
     _detectionTimer?.cancel();
     _descriptionTimer?.cancel();
     _tapTimer?.cancel();
@@ -478,6 +509,55 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
+  Future<void> _initializeNavigation() async {
+    await _navigationService.initialize();
+  }
+
+  Future<void> _startNavigation() async {
+    // Show location picker dialog
+    final selectedLocation = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => LocationPickerDialog(
+        locations: predefinedLocations,
+      ),
+    );
+
+    if (selectedLocation != null) {
+      setState(() {
+        _isNavigating = true;
+      });
+
+      // Stop any ongoing Gemini audio
+      context.read<GeminiProvider>().stopAudio();
+
+      // Start navigation to selected location
+      await _navigationService.startNavigation(
+        selectedLocation['name'],
+        selectedLocation['latitude'],
+        selectedLocation['longitude'],
+      );
+
+      // Announce navigation start
+      context.read<AccessibilityProvider>().speakText(
+          'Starting navigation to ${selectedLocation['name']}',
+          interrupt: true);
+    }
+  }
+
+  Future<void> _stopNavigation() async {
+    setState(() {
+      _isNavigating = false;
+    });
+
+    // Stop navigation
+    await _navigationService.stopNavigation();
+
+    // Announce that navigation has stopped
+    context
+        .read<AccessibilityProvider>()
+        .speakText('Navigation stopped', interrupt: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final accessibilityProvider = Provider.of<AccessibilityProvider>(context);
@@ -511,6 +591,11 @@ class _CameraScreenState extends State<CameraScreen> {
               // Show settings or info sheet
               _showSettingsBottomSheet(context);
             },
+          ),
+          IconButton(
+            icon: Icon(_isNavigating ? Icons.stop : Icons.navigation),
+            onPressed: _isNavigating ? _stopNavigation : _startNavigation,
+            tooltip: _isNavigating ? 'Stop Navigation' : 'Start Navigation',
           ),
         ],
       ),
@@ -659,6 +744,126 @@ class _CameraScreenState extends State<CameraScreen> {
                   ),
                 ),
               ),
+
+            // Navigation map overlay
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: Container(
+                width: 200,
+                height: 200,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: HtmlElementView(
+                    viewType: 'map-container',
+                  ),
+                ),
+              ),
+            ),
+
+            // Navigation status overlay
+            StreamBuilder<NavigationState>(
+              stream: _navigationService.stateStream,
+              builder: (context, snapshot) {
+                final state = snapshot.data ?? NavigationState();
+                if (!state.isNavigating) return const SizedBox.shrink();
+
+                return Positioned(
+                  top: 16,
+                  left: 16,
+                  right: 16,
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.2),
+                          blurRadius: 8,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Navigating to: ${state.destination}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        if (state.currentStep != null)
+                          Text(
+                            state.currentStep!,
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class LocationPickerDialog extends StatelessWidget {
+  final List<Map<String, dynamic>> locations;
+
+  const LocationPickerDialog({
+    super.key,
+    required this.locations,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Select Destination',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 300,
+              width: 300,
+              child: ListView.builder(
+                itemCount: locations.length,
+                itemBuilder: (context, index) {
+                  final location = locations[index];
+                  return ListTile(
+                    title: Text(location['name']),
+                    onTap: () {
+                      Navigator.of(context).pop(location);
+                    },
+                  );
+                },
+              ),
+            ),
           ],
         ),
       ),
