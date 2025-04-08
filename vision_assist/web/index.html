@@ -32,6 +32,7 @@
       let speakingQueue = [];
       let isSpeaking = false;
       let audioEnabled = true;
+      let geminiAudioPlaying = false;
 
       // Toggle audio on/off
       window.toggleAudio = function (enabled) {
@@ -42,10 +43,16 @@
           speechSynthesis.cancel();
           speakingQueue = [];
           isSpeaking = false;
+          geminiAudioPlaying = false;
         } else {
           // Announce that audio is enabled
           window.speakText("Audio feedback enabled", true);
         }
+      };
+
+      // Check if Gemini audio is currently playing
+      window.isGeminiAudioPlaying = function() {
+        return geminiAudioPlaying;
       };
 
       // Speak text with specified options
@@ -60,6 +67,41 @@
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = rate;
         utterance.pitch = pitch;
+        
+        // Use a more natural voice if available
+        try {
+          const voices = speechSynthesis.getVoices();
+          // Try to find a good quality female voice
+          const preferredVoices = [
+            "Google US English Female",
+            "Microsoft Zira - English (United States)",
+            "Samantha",
+            "Karen"
+          ];
+          
+          let selectedVoice = null;
+          
+          // First try to find one of our preferred voices
+          for (const prefVoice of preferredVoices) {
+            selectedVoice = voices.find(v => v.name === prefVoice);
+            if (selectedVoice) break;
+          }
+          
+          // If no preferred voice found, try to find any female US English voice
+          if (!selectedVoice) {
+            selectedVoice = voices.find(v => 
+              v.name.includes("Female") && 
+              (v.lang === "en-US" || v.lang === "en_US")
+            );
+          }
+          
+          // If we found a better voice, use it
+          if (selectedVoice) {
+            utterance.voice = selectedVoice;
+          }
+        } catch (e) {
+          console.log("Error setting voice:", e);
+        }
 
         // If priority message, cancel current speech and speak immediately
         if (priority) {
@@ -121,6 +163,84 @@
 
         const message = `${objectClass} ${direction}, ${proximity}`;
         window.speakText(message, proximity === "VERY CLOSE!");
+      };
+
+      // Play audio from base64 string
+      window.playAudioFromBase64 = function(base64String) {
+        if (!base64String || !audioEnabled) return;
+        
+        try {
+          // Cancel any ongoing speech
+          speechSynthesis.cancel();
+          
+          // Create audio from the base64 string
+          const audio = new Audio(`data:audio/mp3;base64,${base64String}`);
+          
+          // Set up audio event listeners
+          geminiAudioPlaying = true;
+          
+          audio.onended = function() {
+            geminiAudioPlaying = false;
+            console.log("Gemini audio playback completed");
+          };
+          
+          audio.onerror = function() {
+            geminiAudioPlaying = false;
+            console.error("Error in Gemini audio playback");
+          };
+          
+          // Play the audio
+          audio.play().catch(error => {
+            console.error('Error playing audio:', error);
+            geminiAudioPlaying = false;
+          });
+        } catch (error) {
+          console.error('Error creating audio from base64:', error);
+          geminiAudioPlaying = false;
+        }
+      };
+      
+      // Play audio from a data URL
+      window.playAudioFromUrl = function(audioUrl) {
+        if (!audioUrl || !audioEnabled) return;
+        
+        try {
+          // Cancel any ongoing speech
+          speechSynthesis.cancel();
+          
+          // Create and play audio from URL
+          const audio = new Audio(audioUrl);
+          
+          // Set up audio event listeners
+          geminiAudioPlaying = true;
+          
+          audio.onended = function() {
+            geminiAudioPlaying = false;
+            console.log("Gemini audio playback completed");
+          };
+          
+          audio.onerror = function() {
+            geminiAudioPlaying = false;
+            console.error("Error in Gemini audio playback");
+          };
+          
+          // Play the audio
+          audio.play().catch(error => {
+            console.error('Error playing audio from URL:', error);
+            geminiAudioPlaying = false;
+            
+            // If playback fails, try to extract the base64 content
+            if (audioUrl.startsWith('data:audio/mp3;base64,')) {
+              const base64Data = audioUrl.split(',')[1];
+              if (base64Data) {
+                window.playAudioFromBase64(base64Data);
+              }
+            }
+          });
+        } catch (error) {
+          console.error('Error playing audio from URL:', error);
+          geminiAudioPlaying = false;
+        }
       };
     </script>
 

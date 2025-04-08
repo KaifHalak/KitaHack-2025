@@ -8,6 +8,7 @@ class GeminiProvider extends ChangeNotifier {
   late GeminiService _geminiService;
   bool _isInitialized = false;
   String _latestDescription = '';
+  String _latestAudioUrl = '';
   static const String _apiKeyPrefKey = 'gemini_api_key';
 
   GeminiProvider({required this.apiKey}) {
@@ -16,6 +17,7 @@ class GeminiProvider extends ChangeNotifier {
   }
 
   String get latestDescription => _latestDescription;
+  String get latestAudioUrl => _latestAudioUrl;
   bool get isInitialized => _isInitialized;
 
   Future<void> _initialize() async {
@@ -62,17 +64,21 @@ class GeminiProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<String> generateDescription(List<TrackedObject> objects) async {
+  Future<Map<String, dynamic>> generateVoiceDescription(
+      List<TrackedObject> objects,
+      {String? imageBase64}) async {
     if (!_isInitialized || objects.isEmpty) {
-      return '';
+      return {'text': '', 'audioUrl': ''};
     }
 
-    final description = await _geminiService.generateDescription(objects);
-    if (description.isNotEmpty) {
-      _latestDescription = description;
+    final result =
+        await _geminiService.generateVoiceDescription(objects, imageBase64);
+    if (result['text'].isNotEmpty) {
+      _latestDescription = result['text'];
+      _latestAudioUrl = result['audioUrl'];
       notifyListeners();
     }
 
-    return description;
+    return result;
   }
 }

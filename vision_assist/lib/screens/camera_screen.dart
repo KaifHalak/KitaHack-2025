@@ -207,8 +207,8 @@ class _CameraScreenState extends State<CameraScreen> {
   void _startDescriptionTimer() {
     _descriptionTimer?.cancel();
 
-    // Generate AI descriptions every 5 seconds
-    _descriptionTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+    // Generate AI descriptions every 5 seconds, but only if the previous audio has finished
+    _descriptionTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
       _generateGeminiDescription();
     });
   }
@@ -222,20 +222,62 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
 
+    // Check if Gemini audio is currently playing
+    final isAudioPlaying =
+        js.context.callMethod('isGeminiAudioPlaying') as bool;
+    if (isAudioPlaying) {
+      print('Skipping description generation - audio is still playing');
+      return;
+    }
+
     _lastDescriptionTime = now;
+
+    setState(() {
+      _statusMessage = 'Generating AI description...';
+    });
 
     // Get the Gemini provider
     final geminiProvider = Provider.of<GeminiProvider>(context, listen: false);
     final accessibilityProvider =
         Provider.of<AccessibilityProvider>(context, listen: false);
 
-    // Generate a description using Gemini
-    final description =
-        await geminiProvider.generateDescription(_trackedObjects);
+    // Capture the current frame from the video feed
+    String? imageBase64;
+    if (_cameraStream != null && _canvas != null && _ctx != null) {
+      try {
+        // Set canvas dimensions to match video
+        _canvas!.width = _cameraStream!.videoWidth;
+        _canvas!.height = _cameraStream!.videoHeight;
 
-    if (description.isNotEmpty && accessibilityProvider.audioConfirmation) {
-      // Use the browser's speech synthesis to speak the description
-      js.context.callMethod('speakText', [description, true, 1.0, 1.0]);
+        // Draw the current video frame to canvas
+        _ctx!.drawImageScaled(
+            _cameraStream!, 0, 0, _canvas!.width!, _canvas!.height!);
+
+        // Convert canvas to base64 image
+        imageBase64 = _canvas!.toDataUrl('image/jpeg', 0.7).split(',')[1];
+
+        print('Captured image: ${imageBase64.substring(0, 50)}...');
+      } catch (e) {
+        print('Error capturing frame: $e');
+        imageBase64 = null;
+      }
+    }
+
+    // Generate a voice description using Gemini with male voice and image
+    final result = await geminiProvider.generateVoiceDescription(
+      _trackedObjects,
+      imageBase64: imageBase64,
+    );
+
+    if (result['text'].isNotEmpty && accessibilityProvider.audioConfirmation) {
+      setState(() {
+        _statusMessage = 'Playing AI voice description...';
+      });
+
+      // If we have audio URL, play it directly using the JavaScript function
+      if (result['audioUrl'].isNotEmpty) {
+        js.context.callMethod('playAudioFromUrl', [result['audioUrl']]);
+      }
     }
   }
 
@@ -332,8 +374,13 @@ class _CameraScreenState extends State<CameraScreen> {
             interrupt: true);
       } else if (_cameraStream != null) {
         final description = geminiProvider.latestDescription;
-        if (description.isNotEmpty) {
-          // Use Gemini's description directly
+        final audioUrl = geminiProvider.latestAudioUrl;
+
+        if (audioUrl.isNotEmpty) {
+          // Play the audio using the JavaScript function
+          js.context.callMethod('playAudioFromUrl', [audioUrl]);
+        } else if (description.isNotEmpty) {
+          // Fallback to Web Speech API only if audio isn't available
           js.context.callMethod('speakText', [description, true, 1.0, 1.0]);
         } else {
           // Only announce UI state
