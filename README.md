@@ -1,7 +1,6 @@
 # Vision Assist: AI-Powered Visual Navigation for the Visually Impaired
 
 <div align="center">
-  <img src="assets/images/logo.png" alt="Vision Assist Logo" width="200"/>
   
   [![Flutter](https://img.shields.io/badge/Flutter-2.10.0-blue.svg)](https://flutter.dev)
   [![TensorFlow.js](https://img.shields.io/badge/TensorFlow.js-4.13.0-orange.svg)](https://www.tensorflow.org/js)
@@ -148,42 +147,4 @@ flutter test --platform chrome
 flutter test integration_test
 ```
 
-## 📱 Supported Platforms
-
-- Android 8.0+
-- iOS 12.0+
-- Web (Chrome, Firefox, Safari)
-- Progressive Web App (PWA)
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 👥 Team
-
-- [Team Member 1] - Lead Developer
-- [Team Member 2] - AI/ML Specialist
-- [Team Member 3] - UI/UX Designer
-- [Team Member 4] - Accessibility Expert
-
-## 🙏 Acknowledgments
-
-- Google for TensorFlow.js and Gemini AI
-- Ultralytics for YOLOv8
-- Flutter team for the amazing framework
-- All our beta testers and contributors
-
-## 📞 Contact
-
-For questions or support, please contact [your-email@example.com]
-
----
-
-<div align="center">
-  Made with ❤️ for a more accessible world
-</div>
 
